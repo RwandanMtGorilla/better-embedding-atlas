@@ -14,7 +14,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
   "click >= 7.0.0",
-  "pandas >= 2.2.0",
+  "pandas >= 2.2.0, < 3.0.0",
   "fastparquet >= 2024.0.0",
   "platformdirs >= 4.3.0",
   "umap-learn >= 0.5.0",
