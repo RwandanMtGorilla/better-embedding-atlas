@@ -6,6 +6,7 @@
   import { writable } from "svelte/store";
   import { scale } from "svelte/transition";
 
+  import { _ } from "./i18n";
   import LayoutOptionsView from "./layouts/LayoutOptionsView.svelte";
   import LayoutView from "./layouts/LayoutView.svelte";
   import ColumnStylePicker from "./views/ColumnStylePicker.svelte";
@@ -14,6 +15,7 @@
   import ActionButton from "./widgets/ActionButton.svelte";
   import Button from "./widgets/Button.svelte";
   import Input from "./widgets/Input.svelte";
+  import LocaleSelector from "./widgets/LocaleSelector.svelte";
   import PopupButton from "./widgets/PopupButton.svelte";
   import SegmentedControl from "./widgets/SegmentedControl.svelte";
   import Select from "./widgets/Select.svelte";
@@ -120,11 +122,11 @@
     ...(searcher.nearestNeighbors != null ? ["neighbors"] : []),
   ];
 
-  const searchModeOptions: Record<string, { value: string; label: string }> = {
-    "full-text": { value: "full-text", label: "Full Text" },
-    vector: { value: "vector", label: "Vector" },
-    neighbors: { value: "neighbors", label: "Neighbors" },
-  };
+  let searchModeOptions = $derived<Record<string, { value: string; label: string }>>({
+    "full-text": { value: "full-text", label: $_("toolbar.search.modes.fullText") },
+    vector: { value: "vector", label: $_("toolbar.search.modes.vector") },
+    neighbors: { value: "neighbors", label: $_("toolbar.search.modes.neighbors") },
+  });
 
   let searchMode = $state<"full-text" | "vector">("full-text");
 
@@ -171,7 +173,7 @@
       let highlight = query.toString().trim();
 
       if (mode == "neighbors") {
-        label = "Neighbors of #" + query.toString();
+        label = $_("search.neighborsOf", { values: { id: query.toString() } });
         highlight = "";
       }
 
@@ -324,7 +326,7 @@
         <div class="flex flex-row flex-1 justify-between min-w-[180px]">
           {#if searchMode.length > 0}
             <div class="relative w-full">
-              <Input type="search" placeholder="Search..." className="w-full max-w-[400px] " bind:value={searchQuery} />
+              <Input type="search" placeholder={$_("toolbar.search.placeholder")} className="w-full max-w-[400px] " bind:value={searchQuery} />
               {#if searchModes.filter((x) => x != "neighbors").length > 1}
                 <Select
                   options={searchModes.filter((x) => x != "neighbors").map((x) => searchModeOptions[x])}
@@ -362,7 +364,7 @@
               {/if}
             </div>
           {:else}
-            <div class="text-slate-500 dark:text-slate-400">Embedding Atlas</div>
+            <div class="text-slate-500 dark:text-slate-400">{$_("app.name")}</div>
           {/if}
         </div>
         <!-- Right side -->
@@ -372,7 +374,7 @@
           <FilteredCount coordinator={coordinator} filter={crossFilter} table={data.table} />
           <div class="flex flex-row items-center">
             <button
-              title="Clear filters"
+              title={$_("toolbar.filter.clear")}
               onclick={resetFilter}
               class="rounded-md flex select-none items-center p-1.5 text-slate-400 dark:text-slate-500 focus-visible:outline-2 outline-blue-600 -outline-offset-1"
             >
@@ -380,10 +382,10 @@
             </button>
 
             {#if onExportSelection}
-              <PopupButton title="Export Selection">
+              <PopupButton title={$_("toolbar.export.button")}>
                 {#snippet button({ visible, toggle })}
                   <button
-                    title="Export Selection"
+                    title={$_("toolbar.export.button")}
                     onclick={toggle}
                     class="rounded-md px-1.5 py-1.5 flex select-none items-center focus-visible:outline-2 outline-blue-600 -outline-offset-1"
                     class:text-slate-400={!visible}
@@ -396,13 +398,13 @@
                   <div class="flex flex-row gap-2">
                     <ActionButton
                       icon={IconExport}
-                      label="Export Selection"
-                      title="Export the selected points"
+                      label={$_("toolbar.export.button")}
+                      title={$_("toolbar.export.title")}
                       class="w-48"
                       onClick={() => onExportSelection(currentPredicate(), exportFormat)}
                     />
                     <Select
-                      label="Format"
+                      label={$_("toolbar.export.formatLabel")}
                       value={exportFormat}
                       onChange={(v) => (exportFormat = v)}
                       options={[
@@ -440,24 +442,27 @@
             value={layout}
             onChange={(v) => (layout = v)}
             options={[
-              { value: "list", icon: IconListLayout, title: "List layout" },
-              { value: "dashboard", icon: IconDashboardLayout, title: "Dashboard layout" },
+              { value: "list", icon: IconListLayout, title: $_("toolbar.layout.list") },
+              { value: "dashboard", icon: IconDashboardLayout, title: $_("toolbar.layout.dashboard") },
             ]}
           />
           {#if colorSchemeProp == null}
             <Button
               icon={$colorScheme == "dark" ? IconLightMode : IconDarkMode}
-              title="Toggle light / dark mode"
+              title={$_("toolbar.theme.toggle")}
               onClick={() => {
                 $userColorScheme = $colorScheme == "light" ? "dark" : "light";
               }}
             />
           {/if}
-          <PopupButton icon={IconSettings} title="Options">
+          <PopupButton icon={IconSettings} title={$_("toolbar.settings.title")}>
             <div class="min-w-[420px] flex flex-col gap-2">
+              <!-- Language settings -->
+              <h4 class="text-slate-500 dark:text-slate-400 select-none">{$_("toolbar.settings.language")}</h4>
+              <LocaleSelector />
               <!-- Text style settings -->
               {#if columns.length > 0}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">Column Styles</h4>
+                <h4 class="text-slate-500 dark:text-slate-400 select-none">{$_("toolbar.settings.columnStyles")}</h4>
                 <ColumnStylePicker
                   columns={columns}
                   styles={$resolvedColumnStyles}
@@ -468,19 +473,19 @@
               {/if}
               <!-- Export Application -->
               {#if onExportApplication}
-                <h4 class="text-slate-500 dark:text-slate-400 select-none">Export</h4>
+                <h4 class="text-slate-500 dark:text-slate-400 select-none">{$_("toolbar.settings.export")}</h4>
                 <div class="flex flex-col gap-2">
                   <ActionButton
                     icon={IconDownload}
-                    label="Export Application"
-                    title="Download a self-contained static web application"
+                    label={$_("toolbar.settings.exportApp")}
+                    title={$_("toolbar.settings.exportAppTitle")}
                     class="w-48"
                     onClick={onExportApplication}
                   />
                 </div>
               {/if}
-              <h4 class="text-slate-500 dark:text-slate-400 select-none">About</h4>
-              <div>Embedding Atlas, {EMBEDDING_ATLAS_VERSION}</div>
+              <h4 class="text-slate-500 dark:text-slate-400 select-none">{$_("toolbar.settings.about")}</h4>
+              <div>{$_("app.version", { values: { version: EMBEDDING_ATLAS_VERSION } })}</div>
             </div>
           </PopupButton>
         </div>

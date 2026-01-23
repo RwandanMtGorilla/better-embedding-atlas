@@ -4,6 +4,7 @@
   import { makeClient, MosaicClient } from "@uwdata/mosaic-core";
   import * as SQL from "@uwdata/mosaic-sql";
 
+  import { _ } from "../../i18n";
   import Button from "../../widgets/Button.svelte";
   import CodeEditor from "../../widgets/CodeEditor.svelte";
   import CornerButton from "../../widgets/CornerButton.svelte";
@@ -182,14 +183,14 @@
       onclick={() => {
         editingEnabled = true;
         editingItem = null;
-      }}>+ Add Predicate</button
+      }}>{$_("charts.predicates.addPredicate")}</button
     >
   </div>
 
   {#if editingEnabled}
     <div class="mt-4">
-      <Input bind:value={editingName} placeholder="predicate name" className="w-full mb-2" />
-      <div class="text-slate-500 dark:text-slate-400 text-sm mb-1">SQL Predicate</div>
+      <Input bind:value={editingName} placeholder={$_("charts.predicates.predicateName")} className="w-full mb-2" />
+      <div class="text-slate-500 dark:text-slate-400 text-sm mb-1">{$_("charts.predicates.sqlPredicate")}</div>
       <div class="w-full !h-32 mb-2">
         <CodeEditor
           language="sql"
@@ -203,7 +204,7 @@
       <div class="flex gap-2">
         {#if editingItem != null}
           <Button
-            label="Update"
+            label={$_("charts.predicates.update")}
             onClick={async () => {
               let newItem = await validate();
               if (newItem) {
@@ -214,7 +215,7 @@
           />
         {:else}
           <Button
-            label="Add"
+            label={$_("charts.predicates.add")}
             onClick={async () => {
               let newItem = await validate();
               if (newItem) {
@@ -226,7 +227,7 @@
         {/if}
 
         <Button
-          label="Cancel"
+          label={$_("charts.predicates.cancel")}
           onClick={() => {
             editingItem = null;
             editingEnabled = false;
@@ -236,7 +237,7 @@
         <button
           class="text-slate-400 dark:text-slate-500 hover:text-slate-800 dark:hover:text-slate-200"
           onclick={() => (editingPredicate = predicateToString(context.filter.predicate(null)) ?? "")}
-          >Current Predicate</button
+          >{$_("charts.predicates.currentPredicate")}</button
         >
       </div>
     </div>

@@ -2,6 +2,7 @@
 <script lang="ts">
   import Mark from "mark.js";
 
+  import { _ } from "../i18n";
   import Paginator from "../widgets/Paginator.svelte";
   import TooltipContent from "./TooltipContent.svelte";
 
@@ -28,12 +29,12 @@
 
   let resultCountText = $derived(
     items.length == 0
-      ? "No result found."
+      ? $_("search.noResult")
       : items.length == 1
-        ? `${items.length.toLocaleString()} result.`
+        ? $_("search.oneResult", { values: { count: items.length.toLocaleString() } })
         : items.length >= limit
-          ? `More than ${items.length.toLocaleString()} results, showing top ${limit.toLocaleString()}.`
-          : `${items.length.toLocaleString()} results.`,
+          ? $_("search.moreResults", { values: { count: items.length.toLocaleString(), limit: limit.toLocaleString() } })
+          : $_("search.multipleResults", { values: { count: items.length.toLocaleString() } }),
   );
 </script>
 
@@ -70,7 +71,7 @@
                 <span
                   class="px-2 flex gap-2 bg-slate-200 text-slate-500 dark:bg-slate-600 dark:text-slate-300 rounded-md"
                 >
-                  <div class="text-slate-400 dark:text-slate-400 font-medium">Distance</div>
+                  <div class="text-slate-400 dark:text-slate-400 font-medium">{$_("search.distance")}</div>
                   <div class="text-ellipsis whitespace-nowrap overflow-hidden max-w-72">
                     {item.distance.toFixed(5)}
                   </div>

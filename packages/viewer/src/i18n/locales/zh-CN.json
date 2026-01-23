@@ -1,0 +1,186 @@
+{
+  "app": {
+    "name": "Embedding Atlas",
+    "version": "Embedding Atlas, {version}"
+  },
+  "toolbar": {
+    "search": {
+      "placeholder": "搜索...",
+      "modes": {
+        "fullText": "全文搜索",
+        "vector": "向量搜索",
+        "neighbors": "邻近点"
+      }
+    },
+    "filter": {
+      "clear": "清除筛选",
+      "points": "{count} / {total} 个点"
+    },
+    "export": {
+      "button": "导出选择",
+      "title": "导出选中的数据点",
+      "formatLabel": "格式"
+    },
+    "layout": {
+      "list": "列表布局",
+      "dashboard": "仪表盘布局"
+    },
+    "theme": {
+      "toggle": "切换亮色/暗色模式"
+    },
+    "settings": {
+      "title": "选项",
+      "columnStyles": "列样式",
+      "export": "导出",
+      "exportApp": "导出应用",
+      "exportAppTitle": "下载独立的静态网页应用",
+      "about": "关于",
+      "language": "语言"
+    }
+  },
+  "search": {
+    "noResult": "未找到结果。",
+    "oneResult": "{count} 个结果。",
+    "multipleResults": "{count} 个结果。",
+    "moreResults": "超过 {count} 个结果，显示前 {limit} 个。",
+    "neighborsOf": "#{id} 的邻近点",
+    "distance": "距离"
+  },
+  "pagination": {
+    "page": "页码",
+    "of": "共 {count} 页"
+  },
+  "settings": {
+    "searchTooltip": {
+      "title": "搜索和提示 (可选)",
+      "description": "选中的列（如有）将用于全文搜索和工具提示。请选择包含自由文本的列，如描述、聊天消息或摘要。",
+      "textLabel": "文本"
+    },
+    "embeddingView": {
+      "title": "嵌入视图 (可选)",
+      "description": "要启用嵌入视图，您可以 (a) 选择一对预计算的 X 和 Y 列；或 (b) 选择一个文本列并在浏览器中计算嵌入投影。对于大数据集，建议预先计算嵌入及其二维投影。",
+      "modes": {
+        "precomputed": "预计算",
+        "fromText": "从文本",
+        "fromImage": "从图像",
+        "none": "无"
+      },
+      "labels": {
+        "x": "X",
+        "y": "Y",
+        "neighbors": "邻近点",
+        "text": "文本",
+        "image": "图像",
+        "model": "模型"
+      },
+      "neighborsHelp": "邻近点列应包含预计算的最近邻，格式为：{ \"ids\": [n1, n2, ...], \"distances\": [d1, d2, ...] }。ID 应为从零开始的行索引。",
+      "computeHelp": "在浏览器中计算嵌入和二维投影可能需要一些时间。模型将通过 Transformers.js 加载。"
+    },
+    "confirm": "确认"
+  },
+  "fileUpload": {
+    "dragDrop": "拖放文件到此处或点击选择",
+    "dropHere": "将文件拖放到此处",
+    "acceptedTypes": "支持的文件类型：JSON、CSV、Parquet"
+  },
+  "charts": {
+    "countPlot": {
+      "sortOptions": {
+        "totalDesc": "↓ 总数",
+        "selectedDesc": "↓ 已选",
+        "totalAsc": "↑ 总数",
+        "selectedAsc": "↑ 已选",
+        "alphabetical": "↓ 字母顺序"
+      },
+      "showMore": "↓ 最多显示 {count} 个值",
+      "showLess": "↑ 最多显示 {count} 个值",
+      "null": "(空值)",
+      "other": "(其他)",
+      "occurrencesInLists": "(列表中的出现次数)"
+    },
+    "embedding": {
+      "colorLabel": "颜色",
+      "displayMode": "显示模式",
+      "pointSize": "点大小",
+      "maxPoints": "最大点数",
+      "modes": {
+        "points": "散点",
+        "density": "密度"
+      },
+      "auto": "自动",
+      "all": "全部"
+    },
+    "predicates": {
+      "addPredicate": "+ 添加谓词",
+      "predicateName": "谓词名称",
+      "sqlPredicate": "SQL 谓词",
+      "update": "更新",
+      "add": "添加",
+      "cancel": "取消",
+      "currentPredicate": "当前谓词"
+    },
+    "builder": {
+      "confirm": "确认",
+      "selectField": "(选择字段)",
+      "descriptions": {
+        "countPlot": "创建字段的计数图",
+        "histogram": "创建字段的直方图",
+        "lineChart": "创建两个字段的折线图",
+        "ecdf": "创建显示字段经验累积分布 (eCDF) 的图表",
+        "heatmap": "创建两个字段的二维热图",
+        "boxPlot": "创建箱线图",
+        "bubbleChart": "创建气泡图",
+        "embeddingView": "创建嵌入视图",
+        "sqlPredicates": "创建自定义 SQL 谓词过滤器",
+        "markdown": "创建 Markdown 内容视图",
+        "contentViewer": "创建显示所选点指定字段内容的视图",
+        "customSpec": "创建自定义规格图表"
+      },
+      "fieldLabels": {
+        "field": "字段",
+        "xField": "X 字段",
+        "yField": "Y 字段",
+        "colorField": "颜色字段",
+        "groupField": "分组字段",
+        "textField": "文本字段",
+        "categoryField": "类别字段"
+      }
+    },
+    "table": {
+      "columns": "列"
+    }
+  },
+  "layout": {
+    "showHideEmbedding": "显示/隐藏嵌入视图",
+    "showHideTable": "显示/隐藏表格",
+    "showHideCharts": "显示/隐藏图表",
+    "edit": "编辑",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "close": "关闭",
+    "add": "添加",
+    "new": "新建"
+  },
+  "columnStyle": {
+    "column": "列",
+    "format": "格式",
+    "style": "样式"
+  },
+  "statusBar": {
+    "points": "{count} 个点",
+    "marqueeSelection": "切换矩形选择模式。正常模式下，使用 Shift + 拖拽进行矩形选择。",
+    "lassoSelection": "切换套索选择模式。正常模式下，使用 Shift + Meta + 拖拽进行套索选择。"
+  },
+  "common": {
+    "none": "(无)",
+    "loading": "加载中...",
+    "error": "错误",
+    "cancel": "取消",
+    "confirm": "确认",
+    "save": "保存",
+    "delete": "删除",
+    "edit": "编辑",
+    "close": "关闭",
+    "options": "选项"
+  }
+}

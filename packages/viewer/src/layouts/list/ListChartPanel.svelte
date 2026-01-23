@@ -2,6 +2,7 @@
 <script lang="ts">
   import { slide } from "svelte/transition";
 
+  import { _ } from "../../i18n";
   import ConfirmButton from "../../charts/builder/ConfirmButton.svelte";
   import SpecEditor from "../../charts/builder/SpecEditor.svelte";
   import CornerButton from "../../widgets/CornerButton.svelte";
@@ -66,7 +67,7 @@
     {#if onSpecChange}
       <CornerButton
         icon={chartMode == "edit" ? IconCheck : IconEdit}
-        title="Edit"
+        title={$_("layout.edit")}
         onClick={() => {
           isEditing = !isEditing;
           if (isEditing) {
@@ -77,13 +78,13 @@
       />
     {/if}
     {#if onUp}
-      <CornerButton icon={IconUp} title="Move up" onClick={onUp} />
+      <CornerButton icon={IconUp} title={$_("layout.moveUp")} onClick={onUp} />
     {/if}
     {#if onDown}
-      <CornerButton icon={IconDown} title="Move down" onClick={onDown} />
+      <CornerButton icon={IconDown} title={$_("layout.moveDown")} onClick={onDown} />
     {/if}
     {#if onRemove}
-      <CornerButton icon={IconClose} title="Close" onClick={() => onRemove()} />
+      <CornerButton icon={IconClose} title={$_("layout.close")} onClick={() => onRemove()} />
     {/if}
   </div>
 </div>
@@ -106,7 +107,7 @@
             }}
           />
           <ConfirmButton
-            label="Confirm"
+            label={$_("common.confirm")}
             disabled={editingSpec == undefined}
             onClick={() => {
               if (editingSpec != undefined) {

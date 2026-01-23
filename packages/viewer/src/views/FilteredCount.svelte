@@ -3,6 +3,8 @@
   import { Coordinator, type Selection, makeClient } from "@uwdata/mosaic-core";
   import { Query, sql } from "@uwdata/mosaic-sql";
 
+  import { _ } from "../i18n";
+
   interface Props {
     coordinator: Coordinator;
     table: string;
@@ -40,5 +42,7 @@
 </script>
 
 <div>
-  {count?.toLocaleString() ?? ""} <span class="text-slate-500">/ {totalCount?.toLocaleString() ?? ""} points</span>
+  {$_("toolbar.filter.points", {
+    values: { count: count?.toLocaleString() ?? "", total: totalCount?.toLocaleString() ?? "" },
+  })}
 </div>

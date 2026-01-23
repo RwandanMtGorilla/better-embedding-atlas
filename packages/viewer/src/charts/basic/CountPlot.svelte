@@ -3,6 +3,7 @@
   import { makeClient, type Coordinator, type Selection, type SelectionClause } from "@uwdata/mosaic-core";
   import * as SQL from "@uwdata/mosaic-sql";
 
+  import { _ } from "../../i18n";
   import InlineSelect from "../../widgets/InlineSelect.svelte";
   import Container from "../common/Container.svelte";
   import CountPlotBar from "./CountPlotBar.svelte";
@@ -17,8 +18,8 @@
     selection?: string[];
   }
 
-  const OTHER_VALUE = "(other)";
-  const NULL_VALUE = "(null)";
+  let OTHER_VALUE = $derived($_("charts.countPlot.other"));
+  let NULL_VALUE = $derived($_("charts.countPlot.null"));
 
   let {
     context,
@@ -432,7 +433,7 @@
       <div class="flex mt-0.5">
         <div class="w-40 flex-none overflow-hidden whitespace-nowrap text-ellipsis pr-1">
           {#if isListData}
-            <div class="py-0.5 text-slate-400 dark:text-slate-500">(Occurrences in lists)</div>
+            <div class="py-0.5 text-slate-400 dark:text-slate-500">{$_("charts.countPlot.occurrencesInLists")}</div>
           {/if}
         </div>
         <div class="flex-1 mr-2 overflow-hidden">
@@ -448,9 +449,9 @@
               }}
             >
               {#if limit < 50}
-                ↓ Up to 100 values
+                {$_("charts.countPlot.showMore", { values: { count: 100 } })}
               {:else}
-                ↑ Up to 10 values
+                {$_("charts.countPlot.showLess", { values: { count: 10 } })}
               {/if}
             </button>
           {/if}
@@ -460,11 +461,11 @@
           {#if typeof order == "string"}
             <InlineSelect
               options={[
-                { value: "total-descending", label: "↓ Total" },
-                { value: "selected-descending", label: "↓ Selected" },
-                { value: "total-ascending", label: "↑ Total" },
-                { value: "selected-ascending", label: "↑ Selected" },
-                { value: "alphabetical", label: "↓ A-Z" },
+                { value: "total-descending", label: $_("charts.countPlot.sortOptions.totalDesc") },
+                { value: "selected-descending", label: $_("charts.countPlot.sortOptions.selectedDesc") },
+                { value: "total-ascending", label: $_("charts.countPlot.sortOptions.totalAsc") },
+                { value: "selected-ascending", label: $_("charts.countPlot.sortOptions.selectedAsc") },
+                { value: "alphabetical", label: $_("charts.countPlot.sortOptions.alphabetical") },
               ]}
               value={order ?? "total-descending"}
               onChange={(v) => onSpecChange({ order: v })}

@@ -15,5 +15,5 @@
     "types": ["unplugin-icons/types/svelte"],
     "maxNodeModuleJsDepth": 3
   },
-  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
+  "include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte", "src/**/*.json"]
 }

@@ -1,0 +1,186 @@
+{
+  "app": {
+    "name": "Embedding Atlas",
+    "version": "Embedding Atlas, {version}"
+  },
+  "toolbar": {
+    "search": {
+      "placeholder": "Search...",
+      "modes": {
+        "fullText": "Full Text",
+        "vector": "Vector",
+        "neighbors": "Neighbors"
+      }
+    },
+    "filter": {
+      "clear": "Clear filters",
+      "points": "{count} / {total} points"
+    },
+    "export": {
+      "button": "Export Selection",
+      "title": "Export the selected points",
+      "formatLabel": "Format"
+    },
+    "layout": {
+      "list": "List layout",
+      "dashboard": "Dashboard layout"
+    },
+    "theme": {
+      "toggle": "Toggle light / dark mode"
+    },
+    "settings": {
+      "title": "Options",
+      "columnStyles": "Column Styles",
+      "export": "Export",
+      "exportApp": "Export Application",
+      "exportAppTitle": "Download a self-contained static web application",
+      "about": "About",
+      "language": "Language"
+    }
+  },
+  "search": {
+    "noResult": "No result found.",
+    "oneResult": "{count} result.",
+    "multipleResults": "{count} results.",
+    "moreResults": "More than {count} results, showing top {limit}.",
+    "neighborsOf": "Neighbors of #{id}",
+    "distance": "Distance"
+  },
+  "pagination": {
+    "page": "Page",
+    "of": "of {count}"
+  },
+  "settings": {
+    "searchTooltip": {
+      "title": "Search and Tooltip (optional)",
+      "description": "The selected column, if any, will be used for full-text search and tooltips. Choose a column with freeform text, such as a description, chat messages, or a summary.",
+      "textLabel": "Text"
+    },
+    "embeddingView": {
+      "title": "Embedding View (optional)",
+      "description": "To enable the embedding view, you can either (a) pick a pair of pre-computed X and Y columns; or (b) pick a text column and compute the embedding projection in browser. For large data, it's recommended to pre-compute the embedding and its 2D projection.",
+      "modes": {
+        "precomputed": "Pre-computed",
+        "fromText": "From Text",
+        "fromImage": "From Image",
+        "none": "None"
+      },
+      "labels": {
+        "x": "X",
+        "y": "Y",
+        "neighbors": "Neighbors",
+        "text": "Text",
+        "image": "Image",
+        "model": "Model"
+      },
+      "neighborsHelp": "Neighbors column should contain pre-computed nearest neighbors in format: { \"ids\": [n1, n2, ...], \"distances\": [d1, d2, ...] }. IDs should be zero-based row indices.",
+      "computeHelp": "Computing the embedding and 2D projection in browser may take a while. The model will be loaded with Transformers.js."
+    },
+    "confirm": "Confirm"
+  },
+  "fileUpload": {
+    "dragDrop": "Drag & drop files here or click to select",
+    "dropHere": "Drop your files here",
+    "acceptedTypes": "Accepted file types: JSON, CSV, Parquet"
+  },
+  "charts": {
+    "countPlot": {
+      "sortOptions": {
+        "totalDesc": "↓ Total",
+        "selectedDesc": "↓ Selected",
+        "totalAsc": "↑ Total",
+        "selectedAsc": "↑ Selected",
+        "alphabetical": "↓ A-Z"
+      },
+      "showMore": "↓ Up to {count} values",
+      "showLess": "↑ Up to {count} values",
+      "null": "(null)",
+      "other": "(other)",
+      "occurrencesInLists": "(Occurrences in lists)"
+    },
+    "embedding": {
+      "colorLabel": "Color",
+      "displayMode": "Display Mode",
+      "pointSize": "Point Size",
+      "maxPoints": "Max Points",
+      "modes": {
+        "points": "Points",
+        "density": "Density"
+      },
+      "auto": "Auto",
+      "all": "All"
+    },
+    "predicates": {
+      "addPredicate": "+ Add Predicate",
+      "predicateName": "predicate name",
+      "sqlPredicate": "SQL Predicate",
+      "update": "Update",
+      "add": "Add",
+      "cancel": "Cancel",
+      "currentPredicate": "Current Predicate"
+    },
+    "builder": {
+      "confirm": "Confirm",
+      "selectField": "(select field)",
+      "descriptions": {
+        "countPlot": "Create a count plot of a field",
+        "histogram": "Create a histogram of a field",
+        "lineChart": "Create a line chart of two fields",
+        "ecdf": "Create a chart showing the empirical cumulative distribution (eCDF) of a field",
+        "heatmap": "Create a 2D heatmap of two fields",
+        "boxPlot": "Create a box plot",
+        "bubbleChart": "Create a bubble chart",
+        "embeddingView": "Create an embedding view",
+        "sqlPredicates": "Create a filter with custom SQL predicates",
+        "markdown": "Create a view with markdown content",
+        "contentViewer": "Create a view that displays a given field's content for the last selected point",
+        "customSpec": "Create a chart with custom spec"
+      },
+      "fieldLabels": {
+        "field": "Field",
+        "xField": "X Field",
+        "yField": "Y Field",
+        "colorField": "Color Field",
+        "groupField": "Group Field",
+        "textField": "Text Field",
+        "categoryField": "Category Field"
+      }
+    },
+    "table": {
+      "columns": "Columns"
+    }
+  },
+  "layout": {
+    "showHideEmbedding": "Show / hide embedding",
+    "showHideTable": "Show / hide table",
+    "showHideCharts": "Show / hide charts",
+    "edit": "Edit",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "close": "Close",
+    "add": "Add",
+    "new": "New"
+  },
+  "columnStyle": {
+    "column": "Column",
+    "format": "Format",
+    "style": "Style"
+  },
+  "statusBar": {
+    "points": "{count} points",
+    "marqueeSelection": "Toggle rectangle selection mode. In normal mode, use shift + drag for rectangle selection.",
+    "lassoSelection": "Toggle lasso selection mode. In normal mode, use shift + meta + drag for lasso selection."
+  },
+  "common": {
+    "none": "(none)",
+    "loading": "Loading...",
+    "error": "Error",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "delete": "Delete",
+    "edit": "Edit",
+    "close": "Close",
+    "options": "Options"
+  }
+}

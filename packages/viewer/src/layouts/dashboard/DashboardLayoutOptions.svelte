@@ -1,5 +1,6 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import { _ } from "../../i18n";
   import Button from "../../widgets/Button.svelte";
 
   import { IconPlus } from "../../assets/icons.js";
@@ -12,8 +13,8 @@
 
   function newChart() {
     let id = findUnusedId(charts);
-    onChartsChange({ [id]: { type: "builder", title: "New" } });
+    onChartsChange({ [id]: { type: "builder", title: $_("layout.new") } });
   }
 </script>
 
-<Button icon={IconPlus} onClick={newChart} title="Add" />
+<Button icon={IconPlus} onClick={newChart} title={$_("layout.add")} />

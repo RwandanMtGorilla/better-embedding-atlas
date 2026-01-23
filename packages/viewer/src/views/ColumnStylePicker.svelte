@@ -1,5 +1,6 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import { _ } from "../i18n";
   import ColumnStylePickerRow from "./ColumnStylePickerRow.svelte";
 
   import { type ColumnStyle } from "../renderers/index.js";
@@ -18,9 +19,9 @@
   <table>
     <thead>
       <tr class="select-none">
-        <th class="pb-2 text-slate-500 dark:text-slate-400 text-left font-normal text-sm">Column</th>
-        <th class="pb-2 text-slate-500 dark:text-slate-400 text-left font-normal text-sm">Format</th>
-        <th class="pb-2 text-slate-500 dark:text-slate-400 text-left font-normal text-sm">Style</th>
+        <th class="pb-2 text-slate-500 dark:text-slate-400 text-left font-normal text-sm">{$_("columnStyle.column")}</th>
+        <th class="pb-2 text-slate-500 dark:text-slate-400 text-left font-normal text-sm">{$_("columnStyle.format")}</th>
+        <th class="pb-2 text-slate-500 dark:text-slate-400 text-left font-normal text-sm">{$_("columnStyle.style")}</th>
       </tr>
     </thead>
     <tbody>

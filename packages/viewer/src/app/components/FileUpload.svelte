@@ -1,5 +1,7 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import { _ } from "../../i18n";
+
   interface Props {
     extensions?: string[];
     multiple?: boolean;
@@ -66,9 +68,9 @@
 >
   <div class="text-center space-y-2">
     <p class="text-slate-500 dark:text-slate-500">
-      {isDragging ? "Drop your files here" : "Drag & drop files here or click to select"}
+      {isDragging ? $_("fileUpload.dropHere") : $_("fileUpload.dragDrop")}
     </p>
-    <p class="text-sm text-slate-400 dark:text-slate-600">Accepted file types: JSON, CSV, Parquet</p>
+    <p class="text-sm text-slate-400 dark:text-slate-600">{$_("fileUpload.acceptedTypes")}</p>
   </div>
   <input
     bind:this={fileInput}

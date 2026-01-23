@@ -2,6 +2,7 @@
 <script lang="ts">
   import { untrack } from "svelte";
 
+  import { _ } from "../../i18n";
   import Button from "../../widgets/Button.svelte";
   import ComboBox from "../../widgets/ComboBox.svelte";
   import SegmentedControl from "../../widgets/SegmentedControl.svelte";
@@ -101,100 +102,95 @@
 >
   <div class="flex flex-col gap-2 pb-4">
     <!-- Text column -->
-    <h2 class="text-slate-500 dark:text-slate-500">Search and Tooltip (optional)</h2>
+    <h2 class="text-slate-500 dark:text-slate-500">{$_("settings.searchTooltip.title")}</h2>
     <p class="text-sm text-slate-400 dark:text-slate-600">
-      The selected column, if any, will be used for full-text search and tooltips. Choose a column with freeform text,
-      such as a description, chat messages, or a summary.
+      {$_("settings.searchTooltip.description")}
     </p>
     <div class="w-full flex flex-row items-center">
-      <div class="w-[6rem] dark:text-slate-400">Text</div>
+      <div class="w-[6rem] dark:text-slate-400">{$_("settings.searchTooltip.textLabel")}</div>
       <Select
         class="flex-1 min-w-0"
         value={textColumn}
         onChange={(v) => (textColumn = v)}
         options={[
-          { value: undefined, label: "(none)" },
+          { value: undefined, label: $_("common.none") },
           ...stringColumns.map((x) => ({ value: x.column_name, label: `${x.column_name} (${x.column_type})` })),
         ]}
       />
     </div>
     <div class="my-2"></div>
     <!-- Embedding Config -->
-    <h2 class="text-slate-500 dark:text-slate-500">Embedding View (optional)</h2>
+    <h2 class="text-slate-500 dark:text-slate-500">{$_("settings.embeddingView.title")}</h2>
     <p class="text-sm text-slate-400 dark:text-slate-600">
-      To enable the embedding view, you can either (a) pick a pair of pre-computed X and Y columns; or (b) pick a text
-      column and compute the embedding projection in browser. For large data, it's recommended to pre-compute the
-      embedding and its 2D projection.
+      {$_("settings.embeddingView.description")}
     </p>
     <div class="flex items-start">
       <SegmentedControl
         value={embeddingMode}
         onChange={(v) => (embeddingMode = v as any)}
         options={[
-          { value: "precomputed", label: "Pre-computed" },
-          { value: "from-text", label: "From Text" },
-          { value: "from-image", label: "From Image" },
-          { value: "none", label: "None" },
+          { value: "precomputed", label: $_("settings.embeddingView.modes.precomputed") },
+          { value: "from-text", label: $_("settings.embeddingView.modes.fromText") },
+          { value: "from-image", label: $_("settings.embeddingView.modes.fromImage") },
+          { value: "none", label: $_("settings.embeddingView.modes.none") },
         ]}
       />
     </div>
     {#if embeddingMode == "precomputed"}
       <div class="w-full flex flex-row items-center">
-        <div class="w-[6rem] dark:text-slate-400">X</div>
+        <div class="w-[6rem] dark:text-slate-400">{$_("settings.embeddingView.labels.x")}</div>
         <Select
           class="flex-1 min-w-0"
           value={embeddingXColumn}
           onChange={(v) => (embeddingXColumn = v)}
           options={[
-            { value: undefined, label: "(none)" },
+            { value: undefined, label: $_("common.none") },
             ...numericalColumns.map((x) => ({ value: x.column_name, label: `${x.column_name} (${x.column_type})` })),
           ]}
         />
       </div>
       <div class="w-full flex flex-row items-center">
-        <div class="w-[6rem] dark:text-slate-400">Y</div>
+        <div class="w-[6rem] dark:text-slate-400">{$_("settings.embeddingView.labels.y")}</div>
         <Select
           class="flex-1 min-w-0"
           value={embeddingYColumn}
           onChange={(v) => (embeddingYColumn = v)}
           options={[
-            { value: undefined, label: "(none)" },
+            { value: undefined, label: $_("common.none") },
             ...numericalColumns.map((x) => ({ value: x.column_name, label: `${x.column_name} (${x.column_type})` })),
           ]}
         />
       </div>
       <div class="w-full flex flex-row items-center">
-        <div class="w-[6rem] dark:text-slate-400">Neighbors</div>
+        <div class="w-[6rem] dark:text-slate-400">{$_("settings.embeddingView.labels.neighbors")}</div>
         <Select
           class="flex-1 min-w-0"
           value={embeddingNeighborsColumn}
           onChange={(v) => (embeddingNeighborsColumn = v)}
           options={[
-            { value: undefined, label: "(none)" },
+            { value: undefined, label: $_("common.none") },
             ...columns.map((x) => ({ value: x.column_name, label: `${x.column_name} (${x.column_type})` })),
           ]}
         />
       </div>
       <p class="text-sm text-slate-400 dark:text-slate-600">
-        Neighbors column should contain pre-computed nearest neighbors in format: <code
-          >{`{ "ids": [n1, n2, ...], "distances": [d1, d2, ...] }`}</code
-        >. IDs should be zero-based row indices.
+        {$_("settings.embeddingView.neighborsHelp")}
       </p>
     {:else if embeddingMode == "from-text"}
       <div class="w-full flex flex-row items-center">
-        <div class="w-[6rem] dark:text-slate-400">Text</div>
+        <div class="w-[6rem] dark:text-slate-400">{$_("settings.embeddingView.labels.text")}</div>
         <Select
           class="flex-1 min-w-0"
           value={embeddingTextColumn}
           onChange={(v) => (embeddingTextColumn = v)}
           options={[
-            { value: undefined, label: "(none)" },
+            { value: undefined, label: $_("common.none") },
             ...stringColumns.map((x) => ({ value: x.column_name, label: `${x.column_name} (${x.column_type})` })),
           ]}
         />
       </div>
       <div class="w-full flex flex-row items-center">
-        <div class="w-[6rem] dark:text-slate-400">Model</div>
+        <div class="w-[6rem] dark:text-slate-400">{$_("settings.embeddingView.labels.model")}</div>
         <ComboBox
           className="flex-1"
           value={embeddingTextModel}
@@ -204,24 +200,23 @@
         />
       </div>
       <p class="text-sm text-slate-400 dark:text-slate-600">
-        Computing the embedding and 2D projection in browser may take a while. The model will be loaded with
-        Transformers.js.
+        {$_("settings.embeddingView.computeHelp")}
       </p>
     {:else if embeddingMode == "from-image"}
       <div class="w-full flex flex-row items-center">
-        <div class="w-[6rem] dark:text-slate-400">Image</div>
+        <div class="w-[6rem] dark:text-slate-400">{$_("settings.embeddingView.labels.image")}</div>
         <Select
           class="flex-1 min-w-0"
           value={embeddingImageColumn}
           onChange={(v) => (embeddingImageColumn = v)}
           options={[
-            { value: undefined, label: "(none)" },
+            { value: undefined, label: $_("common.none") },
             ...columns.map((x) => ({ value: x.column_name, label: `${x.column_name} (${x.column_type})` })),
           ]}
         />
       </div>
       <div class="w-full flex flex-row items-center">
-        <div class="w-[6rem] dark:text-slate-400">Model</div>
+        <div class="w-[6rem] dark:text-slate-400">{$_("settings.embeddingView.labels.model")}</div>
         <ComboBox
           className="flex-1"
           value={embeddingImageModel}
@@ -231,15 +226,14 @@
         />
       </div>
       <p class="text-sm text-slate-400 dark:text-slate-600">
-        Computing the embedding and 2D projection in browser may take a while. The model will be loaded with
-        Transformers.js.
+        {$_("settings.embeddingView.computeHelp")}
       </p>
     {/if}
   </div>
   <div class="w-full flex flex-row items-center mt-4">
     <div class="flex-1"></div>
     <Button
-      label="Confirm"
+      label={$_("settings.confirm")}
       class="w-40 justify-center"
       onClick={() => {
         confirm();

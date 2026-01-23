@@ -1,5 +1,6 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import { _ } from "../i18n";
   import { IconLeft, IconRight } from "../assets/icons";
 
   interface Props {
@@ -36,7 +37,7 @@
     <IconLeft class="w-5 h-5" />
   </button>
   <div class="flex items-center gap-2">
-    <div>Page</div>
+    <div>{$_("pagination.page")}</div>
     <input
       bind:this={inputElement}
       value={currentPage + 1}
@@ -52,7 +53,7 @@
         }
       }}
     />
-    <div>of {pageCount}</div>
+    <div>{$_("pagination.of", { values: { count: pageCount } })}</div>
   </div>
   <button
     class="border border-slate-300 bg-white/50 dark:border-slate-700 dark:bg-black/50 px-3 py-1 rounded-md"

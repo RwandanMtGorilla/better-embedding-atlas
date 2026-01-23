@@ -1,5 +1,6 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
+  import { _ } from "../../i18n";
   import ToggleButton from "../../widgets/ToggleButton.svelte";
   import { getSections, type ListLayoutState } from "./ListLayout.svelte";
 
@@ -16,7 +17,7 @@
   {#if sections.embedding.length > 0}
     <ToggleButton
       icon={IconEmbeddingView}
-      title="Show / hide embedding"
+      title={$_("layout.showHideEmbedding")}
       bind:checked={
         () => state.showEmbedding ?? true,
         (v) => {
@@ -27,7 +28,7 @@
   {/if}
   <ToggleButton
     icon={IconTable}
-    title="Show / hide table"
+    title={$_("layout.showHideTable")}
     bind:checked={
       () => state.showTable ?? true,
       (v) => {
@@ -37,7 +38,7 @@
   />
   <ToggleButton
     icon={IconMenu}
-    title="Show / hide charts"
+    title={$_("layout.showHideCharts")}
     bind:checked={
       () => state.showCharts ?? true,
       (v) => {
