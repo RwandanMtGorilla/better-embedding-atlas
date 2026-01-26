@@ -17,7 +17,7 @@ import uvicorn
 from .data_source import DataSource
 from .options import make_embedding_atlas_props
 from .server import make_server
-from .utils import Hasher, load_huggingface_data, load_pandas_data
+from .utils import Hasher, cache_path, load_huggingface_data, load_pandas_data
 from .version import __version__
 
 
@@ -201,6 +201,15 @@ def import_modules(names: list[str]):
     help='Column containing pre-computed nearest neighbors in format: {"ids": [n1, n2, ...], "distances": [d1, d2, ...]}. IDs should be zero-based row indices.',
 )
 @click.option(
+    "--projection-cache",
+    "projection_cache",
+    type=str,
+    default=None,
+    help="Identifier for loading pre-computed projection from cache. "
+         "Loads {identifier}.projection.npy, {identifier}.knn_indices.npy, "
+         "and {identifier}.knn_distances.npy from the projections cache directory.",
+)
+@click.option(
     "--query",
     default=None,
     type=str,
@@ -302,6 +311,7 @@ def main(
     x_column: str | None,
     y_column: str | None,
     neighbors_column: str | None,
+    projection_cache: str | None,
     query: str | None,
     sample: int | None,
     umap_n_neighbors: int | None,
@@ -331,7 +341,60 @@ def main(
 
     print(df)
 
-    if enable_projection and (x_column is None or y_column is None):
+    # 处理 --projection-cache 参数
+    if projection_cache is not None:
+        # 参数冲突检查
+        if x_column is not None or y_column is not None:
+            raise click.UsageError(
+                "--projection-cache cannot be used together with --x or --y."
+            )
+
+        if image is not None or vector is not None:
+            raise click.UsageError(
+                "--projection-cache cannot be used together with --image or --vector."
+            )
+
+        from .projection import Projection
+
+        cache_dir = cache_path("projections")
+        cache_file = cache_dir / projection_cache
+
+        # 检查文件是否存在
+        if not Projection.exists(cache_file):
+            missing = []
+            for suffix in [".projection.npy", ".knn_indices.npy", ".knn_distances.npy"]:
+                if not cache_file.with_suffix(suffix).exists():
+                    missing.append(f"{projection_cache}{suffix}")
+            raise click.UsageError(
+                f"Projection cache not found in {cache_dir}. Missing: {', '.join(missing)}"
+            )
+
+        logging.info("Loading projection from cache: %s", str(cache_file))
+        proj = Projection.load(cache_file)
+
+        # 验证行数
+        if proj.projection.shape[0] != len(df):
+            raise click.UsageError(
+                f"Cache has {proj.projection.shape[0]} rows, dataset has {len(df)} rows."
+            )
+
+        # 创建列名
+        x_column = find_column_name(df.columns, "projection_x")
+        y_column = find_column_name(df.columns, "projection_y")
+        if neighbors_column is None:
+            neighbors_column = find_column_name(df.columns, "__neighbors")
+
+        # 注入数据
+        df[x_column] = proj.projection[:, 0]
+        df[y_column] = proj.projection[:, 1]
+        df[neighbors_column] = [
+            {"distances": d.tolist(), "ids": i.tolist()}
+            for i, d in zip(proj.knn_indices, proj.knn_distances)
+        ]
+
+        logging.info("Loaded projection with %d points from cache", len(df))
+
+    elif enable_projection and (x_column is None or y_column is None):
         # No x, y column selected, first see if text/image/vectors column is specified, if not, ask for it
         if text is None and image is None and vector is None:
             text = prompt_for_column(
