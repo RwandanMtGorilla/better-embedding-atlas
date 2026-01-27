@@ -68,6 +68,7 @@
         // table is loaded with the name "dataset" above.
         table: "dataset",
       }}
+      searcher={config.searcher}
       embeddingViewConfig={config.embeddingViewConfig}
       embeddingViewLabels={config.embeddingViewLabels}
       defaultChartsConfig={config.defaultChartsConfig}

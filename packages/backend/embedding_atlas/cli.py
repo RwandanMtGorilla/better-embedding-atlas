@@ -133,7 +133,7 @@ def load_from_chromadb(
     umap_args: dict,
     query: str | None = None,
     sample: int | None = None,
-) -> tuple[pd.DataFrame, str, str, str]:
+) -> tuple[pd.DataFrame, str, str, str, dict[str, int]]:
     """
     Load data from ChromaDB collection with caching support.
 
@@ -146,7 +146,7 @@ def load_from_chromadb(
         sample: Optional number of samples to draw
 
     Returns:
-        Tuple of (dataframe, x_column, y_column, neighbors_column)
+        Tuple of (dataframe, x_column, y_column, neighbors_column, chroma_id_to_row_index)
     """
     from .chroma_client import (
         ChromaDBClient,
@@ -252,7 +252,10 @@ def load_from_chromadb(
         for i, d in zip(proj.knn_indices, proj.knn_distances)
     ]
 
-    return df, x_column, y_column, neighbors_column
+    # Build ChromaDB ID to row index mapping
+    chroma_id_to_row_index = {chroma_id: idx for idx, chroma_id in enumerate(data.ids)}
+
+    return df, x_column, y_column, neighbors_column, chroma_id_to_row_index
 
 
 @click.command()
@@ -524,6 +527,7 @@ def main(
         umap_args["metric"] = umap_metric
 
     # Load data from appropriate source
+    chroma_config = None
     if chroma_collection is not None:
         # Resolve ChromaDB connection parameters from env or defaults
         resolved_chroma_host = chroma_host or os.environ.get("CHROMA_HOST", "localhost")
@@ -531,7 +535,7 @@ def main(
 
         # Load from ChromaDB with error handling
         try:
-            df, x_column, y_column, neighbors_column = load_from_chromadb(
+            df, x_column, y_column, neighbors_column, chroma_id_to_row_index = load_from_chromadb(
                 collection_name=chroma_collection,
                 chroma_host=resolved_chroma_host,
                 chroma_port=resolved_chroma_port,
@@ -547,6 +551,14 @@ def main(
             if "ChromaDB" in error_name:
                 raise click.UsageError(str(e))
             raise
+
+        # Build ChromaDB config for vector search
+        chroma_config = {
+            "host": resolved_chroma_host,
+            "port": resolved_chroma_port,
+            "collection": chroma_collection,
+            "id_to_row_index": chroma_id_to_row_index,
+        }
 
         # Set text column to document if not specified
         if text is None:
@@ -726,7 +738,7 @@ def main(
     hasher.update(metadata)
     identifier = hasher.hexdigest()
 
-    dataset = DataSource(identifier, df, metadata)
+    dataset = DataSource(identifier, df, metadata, chroma_config=chroma_config)
 
     if static is None:
         static = str((pathlib.Path(__file__).parent / "static").resolve())

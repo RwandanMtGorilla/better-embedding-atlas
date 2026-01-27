@@ -163,6 +163,93 @@ def make_server(
             executor, lambda: handle_selection(data)
         )
 
+    # Vector search endpoint (only available when ChromaDB is configured)
+    if data_source.chroma_config is not None:
+        from .chroma_client import ChromaDBClient, ChromaDBError
+        from .embedding_service import (
+            EmbeddingConfig,
+            EmbeddingService,
+            EmbeddingServiceError,
+        )
+
+        chroma_client = ChromaDBClient(
+            host=data_source.chroma_config["host"],
+            port=data_source.chroma_config["port"],
+        )
+        collection_name = data_source.chroma_config["collection"]
+        id_to_row_index = data_source.chroma_config["id_to_row_index"]
+
+        # Initialize embedding service if configured
+        embedding_service = None
+        try:
+            embedding_config = EmbeddingConfig.from_env()
+            embedding_service = EmbeddingService(embedding_config)
+        except EmbeddingServiceError:
+            pass  # Embedding service not configured, vector search will return error
+
+        def handle_vector_search(query_data: dict):
+            if embedding_service is None:
+                return JSONResponse(
+                    {"error": "Embedding service not configured", "code": "CONFIGURATION_ERROR"},
+                    status_code=500,
+                )
+
+            query = query_data.get("query", "")
+            limit = query_data.get("limit", 100)
+
+            if not query:
+                return JSONResponse(
+                    {"error": "Query cannot be empty", "code": "INVALID_REQUEST"},
+                    status_code=400,
+                )
+
+            try:
+                # 1. Embed the query text
+                query_embedding = embedding_service.embed_query(query)
+
+                # 2. Search in ChromaDB
+                search_result = chroma_client.vector_search(
+                    collection_name=collection_name,
+                    query_embedding=query_embedding,
+                    n_results=limit,
+                )
+
+                # 3. Convert ChromaDB IDs to row indices
+                results = []
+                for chroma_id, distance in zip(search_result.ids, search_result.distances):
+                    row_index = id_to_row_index.get(chroma_id)
+                    if row_index is not None:
+                        results.append({
+                            "id": row_index,
+                            "distance": round(distance, 5),
+                        })
+
+                return JSONResponse({"results": results})
+
+            except EmbeddingServiceError as e:
+                return JSONResponse(
+                    {"error": str(e), "code": "EMBEDDING_API_ERROR"},
+                    status_code=500,
+                )
+            except ChromaDBError as e:
+                return JSONResponse(
+                    {"error": str(e), "code": "CHROMADB_ERROR"},
+                    status_code=500,
+                )
+            except Exception as e:
+                return JSONResponse(
+                    {"error": str(e), "code": "INTERNAL_ERROR"},
+                    status_code=500,
+                )
+
+        @app.post("/data/vector-search")
+        async def post_vector_search(req: Request):
+            body = await req.body()
+            data = json.loads(body)
+            return await asyncio.get_running_loop().run_in_executor(
+                executor, lambda: handle_vector_search(data)
+            )
+
     # Static files for the frontend
     app.mount("/", StaticFiles(directory=static_path, html=True))
 

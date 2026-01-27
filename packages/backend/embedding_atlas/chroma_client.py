@@ -40,6 +40,14 @@ class ChromaCollectionData:
     embeddings: np.ndarray | None = None
 
 
+@dataclass
+class VectorSearchResult:
+    """Container for vector search results."""
+
+    ids: list[str]
+    distances: list[float]
+
+
 class ChromaDBClient:
     """Wrapper for ChromaDB HTTP client with pagination support."""
 
@@ -315,6 +323,45 @@ class ChromaDBClient:
             documents=all_documents,
             metadatas=all_metadatas,
             embeddings=embeddings,
+        )
+
+    def vector_search(
+        self,
+        collection_name: str,
+        query_embedding: list[float],
+        n_results: int = 100,
+    ) -> VectorSearchResult:
+        """
+        Perform vector similarity search on a collection.
+
+        Args:
+            collection_name: Name of the ChromaDB collection
+            query_embedding: Query vector for similarity search
+            n_results: Maximum number of results to return
+
+        Returns:
+            VectorSearchResult with ids and distances
+        """
+        try:
+            collection = self._client.get_collection(collection_name)
+        except Exception as e:
+            if "does not exist" in str(e).lower():
+                collections = [c.name for c in self._client.list_collections()]
+                raise ChromaDBCollectionNotFoundError(
+                    f"Collection '{collection_name}' not found. "
+                    f"Available collections: {collections}"
+                )
+            raise
+
+        results = collection.query(
+            query_embeddings=[query_embedding],
+            n_results=n_results,
+            include=["distances"],
+        )
+
+        return VectorSearchResult(
+            ids=results["ids"][0] if results["ids"] else [],
+            distances=results["distances"][0] if results["distances"] else [],
         )
 
 

@@ -92,7 +92,12 @@ export class BackendDataSource implements DataSource {
       };
     }
 
-    return metadata.props;
+    return {
+      ...metadata.props,
+      searcher: {
+        vectorSearch: this.vectorSearch.bind(this),
+      },
+    };
   }
 
   private async fetchEndpoint(endpoint: string, init?: RequestInit) {
@@ -134,4 +139,28 @@ export class BackendDataSource implements DataSource {
     get: (key: string) => this.cacheGet(key),
     set: (key: string, value: any) => this.cacheSet(key, value),
   };
+
+  async vectorSearch(
+    query: string,
+    options?: { limit?: number; predicate?: string | null; onStatus?: (status: string) => void },
+  ): Promise<{ id: any; distance?: number }[]> {
+    options?.onStatus?.("Searching with vector embeddings...");
+
+    try {
+      const resp = await this.fetchEndpoint("vector-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: query,
+          limit: options?.limit ?? 100,
+        }),
+      });
+
+      const data = await resp.json();
+      return data.results;
+    } catch (e) {
+      // Vector search not available or failed
+      return [];
+    }
+  }
 }

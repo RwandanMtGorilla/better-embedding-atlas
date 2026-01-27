@@ -16,11 +16,15 @@ class DataSource:
         identifier: str,
         dataset: pd.DataFrame,
         metadata: dict,
+        chroma_config: dict | None = None,
     ):
         self.identifier = identifier
         self.dataset = dataset
         self.metadata = metadata
         self.cache_path = cache_path("cache", self.identifier)
+        # ChromaDB configuration for vector search
+        # Structure: {"host": str, "port": int, "collection": str, "id_to_row_index": dict[str, int]}
+        self.chroma_config = chroma_config
 
     def cache_set(self, name: str, data):
         path = self.cache_path / name
