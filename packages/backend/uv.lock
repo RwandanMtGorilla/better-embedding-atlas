@@ -760,7 +760,7 @@ requires-dist = [
     { name = "inquirer", specifier = ">=3.0.0" },
     { name = "litellm", specifier = ">=1.70.0" },
     { name = "llvmlite", specifier = ">=0.43.0" },
-    { name = "pandas", specifier = ">=2.2.0" },
+    { name = "pandas", specifier = ">=2.2.0,<3.0.0" },
     { name = "platformdirs", specifier = ">=4.3.0" },
     { name = "pyarrow", specifier = ">=18.0.0" },
     { name = "sentence-transformers", specifier = ">=3.3.0" },
