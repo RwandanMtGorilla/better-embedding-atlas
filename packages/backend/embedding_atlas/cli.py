@@ -4,6 +4,7 @@
 
 import importlib
 import logging
+import os
 import pathlib
 import socket
 from pathlib import Path
@@ -17,7 +18,13 @@ import uvicorn
 from .data_source import DataSource
 from .options import make_embedding_atlas_props
 from .server import make_server
-from .utils import Hasher, cache_path, load_huggingface_data, load_pandas_data
+from .utils import (
+    Hasher,
+    cache_path,
+    load_dotenv_config,
+    load_huggingface_data,
+    load_pandas_data,
+)
 from .version import __version__
 
 
@@ -119,8 +126,137 @@ def import_modules(names: list[str]):
         importlib.import_module(name)
 
 
+def load_from_chromadb(
+    collection_name: str,
+    chroma_host: str,
+    chroma_port: int,
+    umap_args: dict,
+    query: str | None = None,
+    sample: int | None = None,
+) -> tuple[pd.DataFrame, str, str, str]:
+    """
+    Load data from ChromaDB collection with caching support.
+
+    Args:
+        collection_name: ChromaDB collection name
+        chroma_host: ChromaDB server host
+        chroma_port: ChromaDB server port
+        umap_args: UMAP parameters
+        query: Optional SQL query to filter data
+        sample: Optional number of samples to draw
+
+    Returns:
+        Tuple of (dataframe, x_column, y_column, neighbors_column)
+    """
+    from .chroma_client import (
+        ChromaDBClient,
+        chroma_data_to_dataframe,
+    )
+    from .projection import Projection, _run_umap
+
+    logger = logging.getLogger(__name__)
+
+    # Initialize client
+    client = ChromaDBClient(host=chroma_host, port=chroma_port)
+
+    # Step 1: Get documents and metadata (for cache check)
+    logger.info("Fetching documents and metadata from ChromaDB...")
+    data = client.get_documents_and_metadata(collection_name)
+    row_count = len(data.ids)
+
+    # Step 2: Compute cache key
+    hasher = Hasher()
+    hasher.update(
+        {
+            "version": 1,
+            "source": "chromadb",
+            "collection": collection_name,
+            "documents": data.documents,
+            "row_count": row_count,
+            "umap_args": umap_args,
+        }
+    )
+    cache_key = hasher.hexdigest()
+    cache_file = cache_path("projections") / cache_key
+
+    # Step 3: Check cache
+    proj = None
+    if Projection.exists(cache_file):
+        logger.info("Found cached projection, loading from %s", str(cache_file))
+        proj = Projection.load(cache_file)
+
+        # Validate row count
+        if proj.projection.shape[0] == row_count:
+            logger.info("Cache is valid, using cached projection")
+        else:
+            logger.warning(
+                "Cache row count mismatch (%d vs %d), recomputing...",
+                proj.projection.shape[0],
+                row_count,
+            )
+            proj = None
+    else:
+        logger.info("No cached projection found")
+
+    # Step 4: Compute projection if needed
+    if proj is None:
+        logger.info("Fetching embeddings from ChromaDB...")
+        embeddings = client.get_embeddings(collection_name)
+
+        logger.info("Running UMAP on %d embeddings...", len(embeddings))
+        proj = _run_umap(embeddings, umap_args)
+
+        # Save to cache
+        Projection.save(cache_file, proj)
+        logger.info("Saved projection to cache: %s", str(cache_file))
+
+    # Step 5: Convert to DataFrame
+    df = chroma_data_to_dataframe(data)
+
+    # Step 6: Apply query and sample if specified
+    if query is not None:
+        df = query_dataframe(query, df)
+        # Note: query may change row count, but we still use the full projection
+        # This is a limitation - query should be applied before projection
+        if len(df) != row_count:
+            logger.warning(
+                "Query changed row count from %d to %d. "
+                "Projection coordinates may not match correctly. "
+                "Consider using --query before loading from ChromaDB.",
+                row_count,
+                len(df),
+            )
+
+    if sample is not None and sample < len(df):
+        # Sample rows and corresponding projection points
+        indices = df.sample(
+            n=sample, axis=0, random_state=np.random.RandomState(42)
+        ).index.tolist()
+        df = df.loc[indices].reset_index(drop=True)
+        proj = Projection(
+            projection=proj.projection[indices],
+            knn_indices=proj.knn_indices[indices],
+            knn_distances=proj.knn_distances[indices],
+        )
+        logger.info("Sampled %d rows from dataset", sample)
+
+    # Step 7: Add projection columns
+    x_column = find_column_name(df.columns, "projection_x")
+    y_column = find_column_name(df.columns, "projection_y")
+    neighbors_column = find_column_name(df.columns, "__neighbors")
+
+    df[x_column] = proj.projection[:, 0]
+    df[y_column] = proj.projection[:, 1]
+    df[neighbors_column] = [
+        {"distances": d.tolist(), "ids": i.tolist()}
+        for i, d in zip(proj.knn_indices, proj.knn_distances)
+    ]
+
+    return df, x_column, y_column, neighbors_column
+
+
 @click.command()
-@click.argument("inputs", nargs=-1, required=True)
+@click.argument("inputs", nargs=-1, required=False)
 @click.option("--text", default=None, help="Column containing text data.")
 @click.option("--image", default=None, help="Column containing image data.")
 @click.option(
@@ -208,6 +344,27 @@ def import_modules(names: list[str]):
     help="Identifier for loading pre-computed projection from cache. "
          "Loads {identifier}.projection.npy, {identifier}.knn_indices.npy, "
          "and {identifier}.knn_distances.npy from the projections cache directory.",
+)
+@click.option(
+    "--chroma-collection",
+    "chroma_collection",
+    type=str,
+    default=None,
+    help="ChromaDB collection name to load data from. Mutually exclusive with INPUTS argument.",
+)
+@click.option(
+    "--chroma-host",
+    "chroma_host",
+    type=str,
+    default=None,
+    help="ChromaDB server host. Overrides CHROMA_HOST environment variable. Default: localhost.",
+)
+@click.option(
+    "--chroma-port",
+    "chroma_port",
+    type=int,
+    default=None,
+    help="ChromaDB server port. Overrides CHROMA_PORT environment variable. Default: 8000.",
 )
 @click.option(
     "--query",
@@ -312,6 +469,9 @@ def main(
     y_column: str | None,
     neighbors_column: str | None,
     projection_cache: str | None,
+    chroma_collection: str | None,
+    chroma_host: str | None,
+    chroma_port: int | None,
     query: str | None,
     sample: int | None,
     umap_n_neighbors: int | None,
@@ -334,15 +494,73 @@ def main(
         format="%(levelname)s: (%(name)s) %(message)s",
     )
 
+    # Load environment variables from .env file
+    load_dotenv_config()
+
     if with_modules is not None:
         import_modules(with_modules)
 
-    df = load_datasets(inputs, splits=split, query=query, sample=sample)
+    # Parameter validation: ChromaDB vs inputs are mutually exclusive
+    if chroma_collection is not None and len(inputs) > 0:
+        raise click.UsageError(
+            "--chroma-collection cannot be used together with INPUTS argument. "
+            "Please use either --chroma-collection or provide input files, not both."
+        )
 
-    print(df)
+    if chroma_collection is None and len(inputs) == 0:
+        raise click.UsageError(
+            "Either INPUTS argument or --chroma-collection must be provided."
+        )
 
-    # 处理 --projection-cache 参数
-    if projection_cache is not None:
+    # Build UMAP args
+    umap_args = {}
+    if umap_min_dist is not None:
+        umap_args["min_dist"] = umap_min_dist
+    if umap_n_neighbors is not None:
+        umap_args["n_neighbors"] = umap_n_neighbors
+    if umap_random_state is not None:
+        umap_args["random_state"] = umap_random_state
+    if umap_metric is not None:
+        umap_args["metric"] = umap_metric
+
+    # Load data from appropriate source
+    if chroma_collection is not None:
+        # Resolve ChromaDB connection parameters from env or defaults
+        resolved_chroma_host = chroma_host or os.environ.get("CHROMA_HOST", "localhost")
+        resolved_chroma_port = chroma_port or int(os.environ.get("CHROMA_PORT", "8000"))
+
+        # Load from ChromaDB with error handling
+        try:
+            df, x_column, y_column, neighbors_column = load_from_chromadb(
+                collection_name=chroma_collection,
+                chroma_host=resolved_chroma_host,
+                chroma_port=resolved_chroma_port,
+                umap_args=umap_args,
+                query=query,
+                sample=sample,
+            )
+        except ImportError as e:
+            raise click.UsageError(str(e))
+        except Exception as e:
+            # Handle ChromaDB errors (ChromaDBError and subclasses)
+            error_name = type(e).__name__
+            if "ChromaDB" in error_name:
+                raise click.UsageError(str(e))
+            raise
+
+        # Set text column to document if not specified
+        if text is None:
+            text = "document"
+
+        print(df)
+    else:
+        # Existing logic: load from files
+        df = load_datasets(inputs, splits=split, query=query, sample=sample)
+
+        print(df)
+
+    # 处理 --projection-cache 参数 (only when not using ChromaDB)
+    if chroma_collection is None and projection_cache is not None:
         # 参数冲突检查
         if x_column is not None or y_column is not None:
             raise click.UsageError(
@@ -394,7 +612,7 @@ def main(
 
         logging.info("Loaded projection with %d points from cache", len(df))
 
-    elif enable_projection and (x_column is None or y_column is None):
+    elif chroma_collection is None and enable_projection and (x_column is None or y_column is None):
         # No x, y column selected, first see if text/image/vectors column is specified, if not, ask for it
         if text is None and image is None and vector is None:
             text = prompt_for_column(

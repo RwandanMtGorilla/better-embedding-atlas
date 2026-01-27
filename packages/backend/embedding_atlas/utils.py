@@ -16,6 +16,20 @@ from platformdirs import user_cache_path
 logger = logging.getLogger()
 
 
+def load_dotenv_config():
+    """
+    Load environment variables from .env file.
+    Searches for .env in current directory and parent directories.
+    """
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        # python-dotenv not installed, skip loading .env file
+        pass
+
+
 def load_pandas_data(url: str) -> pd.DataFrame:
     suffix = Path(url).suffix.lower()
 
