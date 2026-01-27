@@ -452,6 +452,20 @@ def load_from_chromadb(
     default=None,
     help="Path to a file containing labels for the embedding view. The file should be a table with columns 'x', 'y', 'text', and optionally 'level' and 'priority'",
 )
+@click.option(
+    "--multi-collection",
+    "multi_collection_flag",
+    is_flag=True,
+    default=None,
+    help="Enable multi-collection mode. When enabled, all ChromaDB collections are accessible via API. Overrides MULTI_COLLECTION_MODE env var.",
+)
+@click.option(
+    "--max-cached",
+    "max_cached_arg",
+    type=int,
+    default=None,
+    help="Maximum number of collections to keep loaded in memory (LRU cache). Overrides MAX_CACHED_COLLECTIONS env var. Default: 5.",
+)
 @click.version_option(version=__version__, package_name="embedding_atlas")
 def main(
     inputs,
@@ -491,6 +505,8 @@ def main(
     point_size: float | None,
     stop_words: str | None,
     labels: str | None,
+    multi_collection_flag: bool | None,
+    max_cached_arg: int | None,
 ):
     logging.basicConfig(
         level=logging.INFO,
@@ -502,6 +518,63 @@ def main(
 
     if with_modules is not None:
         import_modules(with_modules)
+
+    # Read multi-collection mode settings from env or CLI args
+    multi_collection = os.environ.get("MULTI_COLLECTION_MODE", "false").lower() == "true"
+    max_cached = int(os.environ.get("MAX_CACHED_COLLECTIONS", "5"))
+
+    # CLI arguments override environment variables
+    if multi_collection_flag is not None:
+        multi_collection = multi_collection_flag
+    if max_cached_arg is not None:
+        max_cached = max_cached_arg
+
+    # Multi-collection mode
+    if multi_collection:
+        # Resolve ChromaDB connection parameters from env or defaults
+        resolved_chroma_host = chroma_host or os.environ.get("CHROMA_HOST", "localhost")
+        resolved_chroma_port = chroma_port or int(os.environ.get("CHROMA_PORT", "8000"))
+
+        # Build UMAP args
+        umap_args = {}
+        if umap_min_dist is not None:
+            umap_args["min_dist"] = umap_min_dist
+        if umap_n_neighbors is not None:
+            umap_args["n_neighbors"] = umap_n_neighbors
+        if umap_random_state is not None:
+            umap_args["random_state"] = umap_random_state
+        if umap_metric is not None:
+            umap_args["metric"] = umap_metric
+
+        from .data_source_manager import DataSourceManager
+        from .server import make_multi_server
+
+        logging.info("Starting in multi-collection mode")
+        logging.info(f"ChromaDB: {resolved_chroma_host}:{resolved_chroma_port}")
+        logging.info(f"Max cached collections: {max_cached}")
+
+        manager = DataSourceManager(
+            chroma_host=resolved_chroma_host,
+            chroma_port=resolved_chroma_port,
+            max_cached=max_cached,
+            umap_args=umap_args,
+            duckdb_uri=duckdb,
+        )
+
+        if static is None:
+            static = str((pathlib.Path(__file__).parent / "static").resolve())
+
+        app = make_multi_server(manager, static_path=static, duckdb_uri=duckdb)
+
+        if enable_auto_port:
+            new_port = find_available_port(port, max_attempts=10, host=host)
+            if new_port != port:
+                logging.info(f"Port {port} is not available, using {new_port}")
+        else:
+            new_port = port
+
+        uvicorn.run(app, port=new_port, host=host, access_log=False)
+        return
 
     # Parameter validation: ChromaDB vs inputs are mutually exclusive
     if chroma_collection is not None and len(inputs) > 0:

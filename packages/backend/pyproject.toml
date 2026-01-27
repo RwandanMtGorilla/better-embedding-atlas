@@ -30,6 +30,7 @@ dependencies = [
   "tqdm >= 4.60.0",
   "litellm >= 1.70.0",
   "python-dotenv >= 1.0.0",
+  "sse-starlette >= 2.0.0",
 ]
 
 [project.optional-dependencies]

@@ -2,7 +2,7 @@
 
 /** Type for window.EMBEDDING_ATLAS_CONFIG. Set this in index.html to configure the application. */
 export interface AppConfig {
-  home: "file-viewer" | "backend-viewer";
+  home: "file-viewer" | "backend-viewer" | "multi-collection";
 }
 
 export function resolveAppConfig(): AppConfig {

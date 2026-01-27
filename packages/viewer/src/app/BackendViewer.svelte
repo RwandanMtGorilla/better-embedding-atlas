@@ -4,9 +4,17 @@
 
   import { BackendDataSource } from "./backend_data_source.js";
 
-  let serverUrl = "./data/";
-  if (import.meta.env.MODE == "development") {
-    serverUrl = "http://localhost:5055/data/";
+  interface Props {
+    serverUrl?: string;
+  }
+
+  let { serverUrl = getDefaultServerUrl() }: Props = $props();
+
+  function getDefaultServerUrl(): string {
+    if (import.meta.env.MODE == "development") {
+      return "http://localhost:5055/data/";
+    }
+    return "./data/";
   }
 
   let dataSource = new BackendDataSource(serverUrl);

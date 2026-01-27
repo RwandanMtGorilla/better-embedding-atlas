@@ -325,6 +325,26 @@ class ChromaDBClient:
             embeddings=embeddings,
         )
 
+    def list_collections_with_info(self) -> list[dict]:
+        """
+        List all collections with their metadata.
+
+        Returns:
+            List of dicts containing collection info:
+            - name: Collection name
+            - count: Number of items in collection
+            - metadata: Collection metadata (if any)
+        """
+        collections = self._client.list_collections()
+        result = []
+        for col in collections:
+            result.append({
+                "name": col.name,
+                "count": col.count(),
+                "metadata": col.metadata,
+            })
+        return result
+
     def vector_search(
         self,
         collection_name: str,

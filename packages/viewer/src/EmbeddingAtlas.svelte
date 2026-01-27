@@ -43,7 +43,7 @@
   import { columnDescriptions, predicateToString, type ColumnDesc } from "./utils/database.js";
   import { latestAsync } from "./utils/latest_async.js";
 
-  const searchLimit = 500;
+  const searchLimit = 50;
 
   let {
     coordinator,
