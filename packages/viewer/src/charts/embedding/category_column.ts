@@ -33,11 +33,11 @@ export async function makeCategoryColumn(
   }
   let jsType = jsTypeFromDBType(desc.column_type);
   if (jsType == "string") {
-    return await makeDiscreteCategoryColumn(coordinator, table, column, 10, theme);
+    return await makeDiscreteCategoryColumn(coordinator, table, column, 20, theme);
   } else if (jsType == "number") {
     let distinct = await distinctCount(coordinator, table, column);
-    if (distinct <= 10) {
-      return await makeDiscreteCategoryColumn(coordinator, table, column, 10, theme);
+    if (distinct <= 20) {
+      return await makeDiscreteCategoryColumn(coordinator, table, column, 20, theme);
     } else {
       return await makeBinnedNumericColumn(coordinator, table, column, theme);
     }
