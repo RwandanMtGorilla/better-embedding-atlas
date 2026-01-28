@@ -2,6 +2,10 @@
 __pycache__/
 node_modules/
 .ipynb_checkpoints/
+.claude/
+.github/
+data/
+.idea/
 build/
 dist/
 distlib/
