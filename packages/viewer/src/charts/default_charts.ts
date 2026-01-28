@@ -132,6 +132,11 @@ export async function defaultCharts(options: {
         }
         break;
       }
+      case "date": {
+        // Date types always use histogram (time distribution chart)
+        charts.push(histogramSpec(item.name));
+        break;
+      }
     }
   }
   return charts;

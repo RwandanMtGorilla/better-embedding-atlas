@@ -5,8 +5,19 @@ import * as SQL from "@uwdata/mosaic-sql";
 import * as d3 from "d3";
 
 import { distinctCount, jsTypeFromDBType } from "../../utils/database.js";
-import { inferBinning } from "../common/binning.js";
+import { type DateInterval, inferBinning, inferDateBinning } from "../common/binning.js";
 import { type ChartTheme } from "../common/theme.js";
+
+/** Date formatters for legend labels */
+const dateFormatters: Record<DateInterval, (date: Date) => string> = {
+  year: (d) => d.getFullYear().toString(),
+  month: (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+  week: (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+  day: (d) => `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`,
+  hour: (d) =>
+    `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:00`,
+  minute: (d) => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`,
+};
 
 export interface EmbeddingLegend {
   indexColumn: string;
@@ -33,6 +44,25 @@ export async function makeCategoryColumn(
   }
   let jsType = jsTypeFromDBType(desc.column_type);
   if (jsType == "string") {
+    // Check if this string looks like dates
+    let sampleValues = Array.from(
+      await coordinator.query(
+        SQL.Query.from(table)
+          .select({ value: SQL.cast(SQL.column(column), "TEXT") })
+          .where(SQL.isNotNull(SQL.column(column)))
+          .limit(100),
+      ),
+    ) as { value: string }[];
+
+    const datePattern = /^\d{4}[-/]\d{2}[-/]\d{2}(\s|T|$)/;
+    const looksLikeDates =
+      sampleValues.length > 0 && sampleValues.filter((s) => datePattern.test(s.value)).length / sampleValues.length > 0.8;
+
+    if (looksLikeDates) {
+      // Use date string binning
+      return await makeBinnedDateStringColumn(coordinator, table, column, theme);
+    }
+
     return await makeDiscreteCategoryColumn(coordinator, table, column, 20, theme);
   } else if (jsType == "number") {
     let distinct = await distinctCount(coordinator, table, column);
@@ -41,6 +71,9 @@ export async function makeCategoryColumn(
     } else {
       return await makeBinnedNumericColumn(coordinator, table, column, theme);
     }
+  } else if (jsType == "date") {
+    // Date type: use date binning
+    return await makeBinnedDateColumn(coordinator, table, column, theme);
   }
   return null;
 }
@@ -267,4 +300,205 @@ function resolveOrdinalColors(theme: ChartTheme, length: number): string[] {
       return Array.from({ length: length }).map((_, i) => interp(i / (length - 1)));
     }
   }
+}
+
+async function makeBinnedDateColumn(
+  coordinator: Coordinator,
+  table: string,
+  column: string,
+  theme: ChartTheme,
+): Promise<EmbeddingLegend> {
+  // Get date statistics (convert to epoch_ms)
+  let stats = (
+    await coordinator.query(
+      SQL.Query.from(table)
+        .select({
+          count: SQL.count(),
+          min: SQL.sql`MIN(epoch_ms(${SQL.column(column)}))`,
+          max: SQL.sql`MAX(epoch_ms(${SQL.column(column)}))`,
+        })
+        .where(SQL.isNotNull(SQL.column(column))),
+    )
+  ).get(0) as { count: number; min: number; max: number };
+
+  let binning = inferDateBinning(stats);
+  let indexColumnName = `__ev_${column}_id`;
+
+  // Compute bin index expression
+  let epochExpr = SQL.sql`epoch_ms(${SQL.column(column)})`;
+  let binIndexExpr = SQL.cond(
+    SQL.isNotNull(SQL.column(column)),
+    SQL.floor(SQL.div(SQL.sub(epochExpr, SQL.literal(binning.binStart)), SQL.literal(binning.binSize))),
+    SQL.literal(null),
+  );
+
+  await coordinator.exec(`
+    ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${SQL.column(indexColumnName)} INTEGER DEFAULT 0;
+    UPDATE ${table}
+    SET ${SQL.column(indexColumnName)} = ${binIndexExpr}
+  `);
+
+  // Count by index
+  let counts = Array.from(
+    await coordinator.query(`
+      SELECT ${SQL.column(indexColumnName)} AS index, COUNT(*)::INT AS count
+      FROM ${table}
+      GROUP BY ${SQL.column(indexColumnName)}
+      ORDER BY ${SQL.column(indexColumnName)} ASC
+    `),
+  );
+
+  let minIndex: number | null = null;
+  let maxIndex: number | null = null;
+  let index2Count = new Map<number | null, number>();
+
+  for (let { index, count } of counts as { index: number | null; count: number }[]) {
+    if (index != null) {
+      if (minIndex == null || index < minIndex) {
+        minIndex = index;
+      }
+      if (maxIndex == null || index > maxIndex) {
+        maxIndex = index;
+      }
+    }
+    index2Count.set(index, count);
+  }
+
+  let legend: EmbeddingLegend["legend"] = [];
+  let dateFormatter = dateFormatters[binning._dateInterval ?? "day"];
+
+  if (minIndex != null && maxIndex != null) {
+    let colors = resolveOrdinalColors(theme, maxIndex - minIndex + 1);
+    for (let index = minIndex; index <= maxIndex; index++) {
+      let lowerBound = new Date(index * binning.binSize + binning.binStart);
+      let upperBound = new Date((index + 1) * binning.binSize + binning.binStart);
+      legend.push({
+        label: `[${dateFormatter(lowerBound)}, ${dateFormatter(upperBound)})`,
+        color: colors[index - minIndex],
+        predicate: SQL.eq(binIndexExpr, SQL.literal(index)),
+        count: index2Count.get(index) ?? 0,
+      });
+    }
+  }
+
+  if (index2Count.has(null)) {
+    let nullIndex = legend.length;
+    await coordinator.exec(`
+        UPDATE ${table}
+        SET ${SQL.column(indexColumnName)} = ${SQL.literal(nullIndex)}
+        WHERE ${SQL.column(indexColumnName)} IS NULL
+      `);
+    legend.push({
+      label: "(null)",
+      color: theme.nullColor,
+      predicate: SQL.isNull(SQL.column(column)),
+      count: index2Count.get(null) ?? 0,
+    });
+  }
+
+  return {
+    indexColumn: indexColumnName,
+    legend: legend,
+  };
+}
+
+async function makeBinnedDateStringColumn(
+  coordinator: Coordinator,
+  table: string,
+  column: string,
+  theme: ChartTheme,
+): Promise<EmbeddingLegend> {
+  // Get date statistics (convert VARCHAR to DATE, then to epoch_ms)
+  let dateExpr = SQL.sql`TRY_CAST(${SQL.column(column)} AS DATE)`;
+  let stats = (
+    await coordinator.query(
+      SQL.Query.from(table)
+        .select({
+          count: SQL.count(),
+          min: SQL.sql`MIN(epoch_ms(${dateExpr}))`,
+          max: SQL.sql`MAX(epoch_ms(${dateExpr}))`,
+        })
+        .where(SQL.isNotNull(dateExpr)),
+    )
+  ).get(0) as { count: number; min: number; max: number };
+
+  let binning = inferDateBinning(stats);
+  let indexColumnName = `__ev_${column}_id`;
+
+  // Compute bin index expression for date strings
+  let epochExpr = SQL.sql`epoch_ms(${dateExpr})`;
+  let binIndexExpr = SQL.cond(
+    SQL.isNotNull(dateExpr),
+    SQL.floor(SQL.div(SQL.sub(epochExpr, SQL.literal(binning.binStart)), SQL.literal(binning.binSize))),
+    SQL.literal(null),
+  );
+
+  await coordinator.exec(`
+    ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${SQL.column(indexColumnName)} INTEGER DEFAULT 0;
+    UPDATE ${table}
+    SET ${SQL.column(indexColumnName)} = ${binIndexExpr}
+  `);
+
+  // Count by index
+  let counts = Array.from(
+    await coordinator.query(`
+      SELECT ${SQL.column(indexColumnName)} AS index, COUNT(*)::INT AS count
+      FROM ${table}
+      GROUP BY ${SQL.column(indexColumnName)}
+      ORDER BY ${SQL.column(indexColumnName)} ASC
+    `),
+  );
+
+  let minIndex: number | null = null;
+  let maxIndex: number | null = null;
+  let index2Count = new Map<number | null, number>();
+
+  for (let { index, count } of counts as { index: number | null; count: number }[]) {
+    if (index != null) {
+      if (minIndex == null || index < minIndex) {
+        minIndex = index;
+      }
+      if (maxIndex == null || index > maxIndex) {
+        maxIndex = index;
+      }
+    }
+    index2Count.set(index, count);
+  }
+
+  let legend: EmbeddingLegend["legend"] = [];
+  let dateFormatter = dateFormatters[binning._dateInterval ?? "day"];
+
+  if (minIndex != null && maxIndex != null) {
+    let colors = resolveOrdinalColors(theme, maxIndex - minIndex + 1);
+    for (let index = minIndex; index <= maxIndex; index++) {
+      let lowerBound = new Date(index * binning.binSize + binning.binStart);
+      let upperBound = new Date((index + 1) * binning.binSize + binning.binStart);
+      legend.push({
+        label: `[${dateFormatter(lowerBound)}, ${dateFormatter(upperBound)})`,
+        color: colors[index - minIndex],
+        predicate: SQL.eq(binIndexExpr, SQL.literal(index)),
+        count: index2Count.get(index) ?? 0,
+      });
+    }
+  }
+
+  if (index2Count.has(null)) {
+    let nullIndex = legend.length;
+    await coordinator.exec(`
+        UPDATE ${table}
+        SET ${SQL.column(indexColumnName)} = ${SQL.literal(nullIndex)}
+        WHERE ${SQL.column(indexColumnName)} IS NULL
+      `);
+    legend.push({
+      label: "(null)",
+      color: theme.nullColor,
+      predicate: SQL.isNull(dateExpr),
+      count: index2Count.get(null) ?? 0,
+    });
+  }
+
+  return {
+    indexColumn: indexColumnName,
+    legend: legend,
+  };
 }

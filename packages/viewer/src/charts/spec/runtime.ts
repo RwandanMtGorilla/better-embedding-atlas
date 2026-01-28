@@ -8,7 +8,7 @@ import { derived, writable, type Writable } from "svelte/store";
 
 import { predicateToString } from "../../utils/database.js";
 import type { ChartContext } from "../chart.js";
-import { computeFieldStats, inferAggregate, type FieldStats } from "../common/aggregate.js";
+import { computeFieldStats, inferAggregate, inferDateAggregate, type FieldStats } from "../common/aggregate.js";
 import type { AxisConfig, ScaleConfig } from "../common/types.js";
 import type {
   AggregateFn,
@@ -490,11 +490,17 @@ function buildEncoding(
       return undefined;
     }
     if (bin) {
-      let aggregate = inferAggregate({
-        stats: stats,
-        scaleType: channel ? ctx.spec.scale?.[channel]?.type : undefined,
-        binCount: bin.desiredCount ?? (channel == "x" || channel == "y" ? 20 : 5),
-      });
+      // Check if this is a date type field
+      let aggregate = stats._isDate
+        ? inferDateAggregate({
+            stats: stats,
+            binCount: bin.desiredCount ?? (channel == "x" || channel == "y" ? 20 : 5),
+          })
+        : inferAggregate({
+            stats: stats,
+            scaleType: channel ? ctx.spec.scale?.[channel]?.type : undefined,
+            binCount: bin.desiredCount ?? (channel == "x" || channel == "y" ? 20 : 5),
+          });
       if (aggregate == undefined) {
         console.warn(`Invalid spec: unsupported data type`);
         return;

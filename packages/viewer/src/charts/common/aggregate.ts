@@ -4,7 +4,7 @@ import type { Coordinator } from "@uwdata/mosaic-core";
 import * as SQL from "@uwdata/mosaic-sql";
 
 import { jsTypeFromDBType } from "../../utils/database.js";
-import { inferBinning } from "./binning.js";
+import { type DateBinning, type DateInterval, inferBinning, inferDateBinning } from "./binning.js";
 import type { ScaleConfig, ScaleType } from "./types.js";
 
 export interface FieldStats {
@@ -38,6 +38,10 @@ export interface FieldStats {
     // Number of null points
     nullCount: number;
   };
+  /** Whether this is a date type field (internal use) */
+  _isDate?: boolean;
+  /** Whether this was originally a date string (internal use) */
+  _isDateString?: boolean;
 }
 
 /** Collect stats for distribution visualization.
@@ -57,7 +61,35 @@ export async function computeFieldStats(
     return;
   }
   let jsColumnType = jsTypeFromDBType(columnType);
-  if (jsColumnType == "number") {
+  if (jsColumnType == "date") {
+    // Date type: convert to epoch_ms for statistics
+    let epochExpr = SQL.sql`epoch_ms(${field})`;
+    let fieldExpr = SQL.cast(epochExpr, "DOUBLE");
+    let r1 = await query(
+      SQL.Query.from(table)
+        .select({
+          count: SQL.count(),
+          min: SQL.min(fieldExpr),
+          minPositive: SQL.min(SQL.cond(SQL.gt(fieldExpr, 0), fieldExpr, SQL.literal(null))),
+          max: SQL.max(fieldExpr),
+          mean: SQL.avg(fieldExpr),
+          median: SQL.median(fieldExpr),
+        })
+        .where(SQL.isNotNull(field)),
+    );
+    let r2 = await query(
+      SQL.Query.from(table)
+        .select({
+          countNonFinite: SQL.count(),
+        })
+        .where(SQL.isNull(field)),
+    );
+    return {
+      field: field,
+      quantitative: { ...r1.get(0), ...r2.get(0) },
+      _isDate: true,
+    };
+  } else if (jsColumnType == "number") {
     let fieldExpr = SQL.cast(field, "DOUBLE");
     let r1 = await query(
       SQL.Query.from(table)
@@ -84,6 +116,59 @@ export async function computeFieldStats(
     };
   } else if (jsColumnType == "string") {
     let fieldExpr = SQL.cast(field, "TEXT");
+
+    // Check if this string field looks like dates (YYYY-MM-DD format)
+    let sampleValues: any[] = Array.from(
+      await query(
+        SQL.Query.from(table)
+          .select({ value: fieldExpr })
+          .where(SQL.isNotNull(fieldExpr))
+          .limit(100),
+      ),
+    );
+
+    // Date pattern: YYYY-MM-DD or YYYY/MM/DD or YYYY-MM-DD HH:MM:SS etc.
+    const datePattern = /^\d{4}[-/]\d{2}[-/]\d{2}(\s|T|$)/;
+    const looksLikeDates =
+      sampleValues.length > 0 && sampleValues.filter((s) => datePattern.test(s.value)).length / sampleValues.length > 0.8;
+
+    if (looksLikeDates) {
+      // Treat as date string - try to parse and convert to epoch_ms
+      // Use TRY_CAST to safely convert string to DATE, then to epoch_ms
+      let dateExpr = SQL.sql`TRY_CAST(${field} AS DATE)`;
+      let epochExpr = SQL.sql`epoch_ms(${dateExpr})`;
+      let epochFieldExpr = SQL.cast(epochExpr, "DOUBLE");
+
+      let r1 = await query(
+        SQL.Query.from(table)
+          .select({
+            count: SQL.count(),
+            min: SQL.min(epochFieldExpr),
+            minPositive: SQL.min(SQL.cond(SQL.gt(epochFieldExpr, 0), epochFieldExpr, SQL.literal(null))),
+            max: SQL.max(epochFieldExpr),
+            mean: SQL.avg(epochFieldExpr),
+            median: SQL.median(epochFieldExpr),
+          })
+          .where(SQL.isNotNull(dateExpr)),
+      );
+      let r2 = await query(
+        SQL.Query.from(table)
+          .select({
+            countNonFinite: SQL.count(),
+          })
+          .where(SQL.or(SQL.isNull(dateExpr), SQL.isNull(field))),
+      );
+
+      // Only use date treatment if we got valid results
+      if (r1.get(0).count > 0 && r1.get(0).min != null && r1.get(0).max != null) {
+        return {
+          field: field,
+          quantitative: { ...r1.get(0), ...r2.get(0) },
+          _isDate: true,
+          _isDateString: true, // Mark that this was originally a string
+        };
+      }
+    }
 
     let levels: any[] = Array.from(
       await query(
@@ -302,4 +387,97 @@ export function inferAggregate({
       },
     };
   }
+}
+
+/** Infer aggregate for date type fields */
+export function inferDateAggregate({
+  stats,
+  binCount,
+}: {
+  stats: FieldStats;
+  binCount?: number;
+}): AggregateInfo | undefined {
+  if (!stats.quantitative || !stats._isDate) {
+    return undefined;
+  }
+
+  const { min, max, count, countNonFinite } = stats.quantitative;
+  const binning = inferDateBinning({ min, max, count }, { desiredCount: binCount ?? 20 });
+
+  // Generate binning expression using epoch_ms
+  // If this was originally a date string, we need to TRY_CAST first
+  let epochExpr = stats._isDateString
+    ? SQL.sql`epoch_ms(TRY_CAST(${stats.field} AS DATE))`
+    : SQL.sql`epoch_ms(${stats.field})`;
+  let inputExpr = SQL.cast(epochExpr, "DOUBLE");
+
+  // For date strings, we check if TRY_CAST result is not null
+  let notNullCheck = stats._isDateString
+    ? SQL.sql`TRY_CAST(${stats.field} AS DATE) IS NOT NULL`
+    : SQL.isNotNull(stats.field);
+
+  let select = SQL.cond(
+    notNullCheck,
+    SQL.floor(SQL.div(SQL.sub(inputExpr, SQL.literal(binning.binStart)), SQL.literal(binning.binSize))),
+    SQL.literal(null),
+  );
+
+  let binIndexToValue = (idx: number) => {
+    return idx * binning.binSize + binning.binStart;
+  };
+
+  let bin0 = Math.floor((min - binning.binStart) / binning.binSize);
+  let bin1 = Math.floor((max - binning.binStart) / binning.binSize);
+  let domain = [binIndexToValue(bin0), binIndexToValue(bin1 + 1)];
+
+  let hasNA = countNonFinite > 0;
+
+  let valueToPredicate = (v: AggregateValue | AggregateValue[]): SQL.ExprNode => {
+    if (typeof v == "string") {
+      if (v == "n/a") {
+        return stats._isDateString
+          ? SQL.sql`TRY_CAST(${stats.field} AS DATE) IS NULL`
+          : SQL.isNull(stats.field);
+      }
+    } else if (v instanceof Array) {
+      if (v.length == 2 && typeof v[0] == "number") {
+        let [v1, v2] = v as [number, number];
+        // Filter by epoch_ms range
+        let epochFieldExpr = stats._isDateString
+          ? SQL.sql`epoch_ms(TRY_CAST(${stats.field} AS DATE))`
+          : SQL.sql`epoch_ms(${stats.field})`;
+        return SQL.sql`${epochFieldExpr} BETWEEN ${SQL.literal(Math.min(v1, v2))} AND ${SQL.literal(Math.max(v1, v2))}`;
+      } else {
+        return SQL.or(...(v as AggregateValue[]).map(valueToPredicate));
+      }
+    }
+    return SQL.literal(false);
+  };
+
+  return {
+    select: select,
+    scale: {
+      type: "linear",
+      domain: domain,
+      specialValues: hasNA ? ["n/a"] : [],
+      _isDate: true,
+      _dateInterval: binning._dateInterval,
+    },
+    predicate: valueToPredicate,
+    order: (a, b) => {
+      let xa = typeof a == "string" ? [1, 0] : [0, (a as [number, number])[0]];
+      let xb = typeof b == "string" ? [1, 0] : [0, (b as [number, number])[0]];
+      if (xa[0] != xb[0]) {
+        return xa[0] - xb[0];
+      }
+      return xa[1] - xb[1];
+    },
+    field: (v) => {
+      if (v == undefined) {
+        return "n/a";
+      } else {
+        return [binIndexToValue(v), binIndexToValue(v + 1)];
+      }
+    },
+  };
 }

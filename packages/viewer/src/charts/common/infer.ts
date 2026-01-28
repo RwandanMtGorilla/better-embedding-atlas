@@ -2,6 +2,7 @@
 
 import * as d3 from "d3";
 
+import type { DateInterval } from "./binning.js";
 import { resolveInterpolate, type ChartTheme } from "./theme.js";
 import type {
   AxisConfig,
@@ -15,6 +16,16 @@ import type {
   ScaleType,
   Tick,
 } from "./types.js";
+
+/** Date formatters for different intervals */
+const dateFormatters: Record<DateInterval, (date: Date) => string> = {
+  year: d3.timeFormat("%Y"),
+  month: d3.timeFormat("%Y-%m"),
+  week: d3.timeFormat("%Y-%m-%d"),
+  day: d3.timeFormat("%m-%d"),
+  hour: d3.timeFormat("%m-%d %H:00"),
+  minute: d3.timeFormat("%H:%M"),
+};
 
 let canvas: HTMLCanvasElement | undefined = undefined;
 
@@ -256,7 +267,16 @@ function makeContinuousScale(
       values = values.filter((x) => x >= dmin && x <= dmax);
     }
     let labelPadding = axis.labelPadding ?? 6;
-    let tickFormat = scale.tickFormat(axis.values ? axis.values.length : (axis.desiredTickCount ?? 5));
+
+    // Use date formatter if this is a date scale
+    let tickFormat: (v: number) => string;
+    if (spec._isDate && spec._dateInterval) {
+      const formatter = dateFormatters[spec._dateInterval];
+      tickFormat = (v: number) => formatter(new Date(v));
+    } else {
+      tickFormat = scale.tickFormat(axis.values ? axis.values.length : (axis.desiredTickCount ?? 5));
+    }
+
     let valueLevel = (x: number) => {
       if (spec.type == "log" || spec.type == "symlog") {
         return Math.round(Math.log10(Math.abs(x))) == Math.log10(Math.abs(x)) ? 0 : 1;

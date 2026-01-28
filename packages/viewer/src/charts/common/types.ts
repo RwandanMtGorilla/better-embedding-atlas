@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
 import type { ScaleType } from "../spec/spec.js";
+import type { DateInterval } from "./binning.js";
 
 export { type ScaleType };
 
@@ -24,6 +25,12 @@ export interface ScaleConfig {
    * For quantitative color scales, this should be a predefined interpolate scheme, or a list of colors to interpolate.
    */
   range?: (string | number)[] | string;
+
+  /** Whether this scale represents date/time values (internal use) */
+  _isDate?: boolean;
+
+  /** Date interval for date scales (internal use) */
+  _dateInterval?: DateInterval;
 }
 
 export interface AxisConfig {

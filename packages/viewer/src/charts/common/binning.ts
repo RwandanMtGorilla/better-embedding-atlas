@@ -47,6 +47,74 @@ function roundToNearest(value: number, array: number[]): number {
   return minV;
 }
 
+/** Date interval types for date binning */
+export type DateInterval = "year" | "month" | "week" | "day" | "hour" | "minute";
+
+/** Extended binning with optional date metadata */
+export interface DateBinning extends Binning {
+  _isDate?: boolean;
+  _dateInterval?: DateInterval;
+}
+
+/** Get approximate milliseconds for a date interval */
+function getIntervalMs(interval: DateInterval): number {
+  switch (interval) {
+    case "year":
+      return 365.25 * 24 * 60 * 60 * 1000;
+    case "month":
+      return 30.44 * 24 * 60 * 60 * 1000;
+    case "week":
+      return 7 * 24 * 60 * 60 * 1000;
+    case "day":
+      return 24 * 60 * 60 * 1000;
+    case "hour":
+      return 60 * 60 * 1000;
+    case "minute":
+      return 60 * 1000;
+  }
+}
+
+/** Infer appropriate date interval based on time range */
+export function inferDateInterval(minMs: number, maxMs: number, desiredCount: number = 20): DateInterval {
+  const rangeMs = maxMs - minMs;
+  const rangeDays = rangeMs / (1000 * 60 * 60 * 24);
+
+  // Choose interval so we get roughly desiredCount bins
+  if (rangeDays > 365 * 5) return "year";
+  if (rangeDays > 365) return "month";
+  if (rangeDays > 60) return "week";
+  if (rangeDays > 3) return "day";
+  if (rangeDays > 0.1) return "hour";
+  return "minute";
+}
+
+/** Infer binning for date values (in epoch milliseconds) */
+export function inferDateBinning(
+  stats: { min: number; max: number; count: number },
+  options: { desiredCount?: number } = {},
+): DateBinning {
+  const { min, max } = stats;
+  const desiredCount = options.desiredCount ?? 20;
+
+  const interval = inferDateInterval(min, max, desiredCount);
+  const intervalMs = getIntervalMs(interval);
+
+  // Align to time boundaries
+  const alignedMin = Math.floor(min / intervalMs) * intervalMs;
+  const alignedMax = Math.ceil(max / intervalMs) * intervalMs;
+
+  return {
+    scale: {
+      ...scaleTypes.linear,
+      domain: [alignedMin, alignedMax],
+    },
+    binStart: alignedMin,
+    binSize: intervalMs,
+    _isDate: true,
+    _dateInterval: interval,
+  };
+}
+
 export function inferBinning(
   stats: { min: number; minPositive: number; max: number; median: number; count: number },
   options: {
