@@ -459,6 +459,15 @@ def make_multi_server(
             return Response(status_code=404)
         return obj
 
+    @app.get("/collection/{name}/data/archive.zip")
+    async def get_collection_archive(name: str):
+        """Export collection as a static archive."""
+        managed = await manager.get_or_load(name)
+        if managed.data_source is None:
+            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
+        data = managed.data_source.make_archive(static_path)
+        return Response(content=data, media_type="application/zip")
+
     @app.get("/collection/{name}/data/query")
     async def get_collection_query(name: str, req: Request):
         """Execute a DuckDB query (GET)."""

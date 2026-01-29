@@ -53,7 +53,19 @@ class DataSource:
             for root, _, files in os.walk(static_path):
                 for fn in files:
                     p = os.path.relpath(os.path.join(root, fn), static_path)
-                    zip.write(os.path.join(root, fn), p)
+                    full_path = os.path.join(root, fn)
+                    # 对 index.html 进行特殊处理，修改配置为单数据源模式
+                    if p == "index.html":
+                        with open(full_path, "r", encoding="utf-8") as f:
+                            content = f.read()
+                        # 替换配置为单数据源模式，使导出的应用直接显示UMAP图
+                        content = content.replace(
+                            '{ home: "multi-collection" }',
+                            '{ home: "backend-viewer" }'
+                        )
+                        zip.writestr(p, content)
+                    else:
+                        zip.write(full_path, p)
             for root, _, files in os.walk(self.cache_path):
                 for fn in files:
                     p = os.path.join(
@@ -61,4 +73,58 @@ class DataSource:
                         os.path.relpath(os.path.join(root, fn), str(self.cache_path)),
                     )
                     zip.write(os.path.join(root, fn), p)
+
+            # 添加启动脚本
+            start_bat = """\
+@echo off
+chcp 65001 >nul
+echo Starting Embedding Atlas...
+echo.
+
+where python >nul 2>nul
+if %errorlevel% neq 0 (
+    echo [Error] Python not found. Please install Python first.
+    echo Download: https://www.python.org/downloads/
+    pause
+    exit /b 1
+)
+
+echo Server starting at: http://localhost:5051
+echo Press Ctrl+C to stop.
+echo.
+start http://localhost:5051
+python -m http.server 5051
+"""
+            zip.writestr("start.bat", start_bat)
+
+            start_sh = """\
+#!/bin/bash
+echo "Starting Embedding Atlas..."
+echo
+
+if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
+    echo "[Error] Python not found. Please install Python first."
+    exit 1
+fi
+
+PYTHON_CMD="python3"
+if ! command -v python3 &> /dev/null; then
+    PYTHON_CMD="python"
+fi
+
+echo "Server starting at: http://localhost:5051"
+echo "Press Ctrl+C to stop."
+echo
+
+# Try to open browser
+if command -v xdg-open &> /dev/null; then
+    xdg-open http://localhost:5051 &
+elif command -v open &> /dev/null; then
+    open http://localhost:5051 &
+fi
+
+$PYTHON_CMD -m http.server 5051
+"""
+            zip.writestr("start.sh", start_sh)
+
         return io.getvalue()
