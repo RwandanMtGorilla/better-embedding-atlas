@@ -63,11 +63,11 @@ export async function makeCategoryColumn(
       return await makeBinnedDateStringColumn(coordinator, table, column, theme);
     }
 
-    return await makeDiscreteCategoryColumn(coordinator, table, column, 20, theme);
+    return await makeDiscreteCategoryColumn(coordinator, table, column, 18, theme);
   } else if (jsType == "number") {
     let distinct = await distinctCount(coordinator, table, column);
     if (distinct <= 20) {
-      return await makeDiscreteCategoryColumn(coordinator, table, column, 20, theme);
+      return await makeDiscreteCategoryColumn(coordinator, table, column, 18, theme);
     } else {
       return await makeBinnedNumericColumn(coordinator, table, column, theme);
     }
