@@ -51,6 +51,8 @@
   import Slider from "../../widgets/Slider.svelte";
   import Legend from "./Legend.svelte";
 
+  import { _ } from "../../i18n";
+
   import { IconSettings } from "../../assets/icons.js";
   import { isolatedWritable } from "../../utils/store.js";
   import type { ChartViewProps, RowID } from "../chart.js";
@@ -278,7 +280,7 @@
     >
       <Select
         class="max-w-64"
-        label="Color"
+        label={$_("charts.embedding.colorLabel")}
         value={categoryColumn}
         onChange={(v) => onSpecChange({ data: { ...spec.data, category: v } })}
         options={[
@@ -288,17 +290,17 @@
             .map((c) => ({ value: c.name, label: `${c.name} (${c.type})` })),
         ]}
       />
-      <PopupButton icon={IconSettings} title="Options">
+      <PopupButton icon={IconSettings} title={$_("common.options")}>
         <div class="flex flex-col gap-2 w-64">
-          <div class="text-slate-500 dark:text-slate-400 select-none">Display Mode</div>
+          <div class="text-slate-500 dark:text-slate-400 select-none">{$_("charts.embedding.displayMode")}</div>
           <div class="flex gap-2 items-center">
             <Select
               value={spec.mode ?? "points"}
               onChange={(v) => onSpecChange({ mode: v })}
               disabled={categoryLegend != null && categoryLegend.legend.length > maxCategories}
               options={[
-                { value: "points", label: "Points" },
-                { value: "density", label: "Density" },
+                { value: "points", label: $_("charts.embedding.modes.points") },
+                { value: "density", label: $_("charts.embedding.modes.density") },
               ]}
             />
             {#if (spec.mode ?? "points") == "density"}
@@ -313,7 +315,7 @@
               />
             {/if}
           </div>
-          <div class="text-slate-500 dark:text-slate-400 select-none">Point Size</div>
+          <div class="text-slate-500 dark:text-slate-400 select-none">{$_("charts.embedding.pointSize")}</div>
           <div class="flex gap-2 items-center">
             <Slider
               bind:value={() => spec.pointSize ?? 1, (v) => onSpecChange({ pointSize: v })}
@@ -321,14 +323,14 @@
               max={10}
               step={0.05}
             />
-            <Button label="Auto" onClick={() => onSpecChange({ pointSize: undefined })} />
+            <Button label={$_("charts.embedding.auto")} onClick={() => onSpecChange({ pointSize: undefined })} />
           </div>
           {#if totalPointCount != null && totalPointCount > minDownsampleMaxPoints}
             {@const effectiveLimit = spec.downsampleMaxPoints ?? Math.min(defaultDownsampleMaxPoints, totalPointCount)}
             {@const isMaxed = effectiveLimit >= totalPointCount}
             <div class="text-slate-500 dark:text-slate-400 select-none">
-              Max Points: {isMaxed
-                ? "All"
+              {$_("charts.embedding.maxPoints")}: {isMaxed
+                ? $_("charts.embedding.all")
                 : effectiveLimit >= 1000000
                   ? (effectiveLimit / 1000000).toFixed(1) + "M"
                   : (effectiveLimit / 1000).toFixed(0) + "K"}

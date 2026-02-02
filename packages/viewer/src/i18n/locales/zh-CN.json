@@ -96,7 +96,12 @@
       "showLess": "↑ 最多显示 {count} 个值",
       "null": "(空值)",
       "other": "(其他)",
-      "occurrencesInLists": "(列表中的出现次数)"
+      "occurrencesInLists": "(列表中的出现次数)",
+      "tooltips": {
+        "ofSelection": "占选中项",
+        "ofAllRows": "占所有行",
+        "ofAllOccurrences": "占所有出现次数"
+      }
     },
     "embedding": {
       "colorLabel": "颜色",
@@ -148,6 +153,10 @@
     },
     "table": {
       "columns": "列"
+    },
+    "widgets": {
+      "normalize": "归一化:",
+      "off": "关闭"
     }
   },
   "layout": {

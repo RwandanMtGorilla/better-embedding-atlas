@@ -3,6 +3,8 @@
   import InlineSelect from "../../widgets/InlineSelect.svelte";
   import ScaleTypePicker from "../controls/ScaleTypePicker.svelte";
 
+  import { _ } from "../../i18n";
+
   import type { ChartViewProps } from "../chart.js";
   import type { ChartOutputs } from "./runtime.js";
   import type { ChartSpec } from "./spec.js";
@@ -31,10 +33,10 @@
     {:else if widget.type == "encoding.normalize"}
       {@const layers = typeof widget.layer == "number" ? [widget.layer] : widget.layer}
       <span class="flex gap-1 select-none">
-        <span class="text-slate-400 dark:text-slate-500 text-sm">Normalize:</span>
+        <span class="text-slate-400 dark:text-slate-500 text-sm">{$_("charts.widgets.normalize")}</span>
         <InlineSelect
           options={[
-            { value: null, label: "off" },
+            { value: null, label: $_("charts.widgets.off") },
             ...(widget.options ?? ["x", "y"]).map((x) => ({ value: x, label: x.toUpperCase() })),
           ]}
           value={(spec.layers?.[layers[0]]?.encoding?.[widget.attribute] as any)?.normalize ?? null}

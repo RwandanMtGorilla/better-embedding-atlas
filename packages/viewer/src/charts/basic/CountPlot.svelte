@@ -370,20 +370,20 @@
       title = hasSelection
         ? [
             `${item.countSelected.toLocaleString()} / ${item.count.toLocaleString()} (${formatPercentage(item.countSelected, item.count)})`,
-            `${formatPercentage(item.countSelected, chartData.sumSelected)} of selection`,
+            `${formatPercentage(item.countSelected, chartData.sumSelected)} ${$_("charts.countPlot.tooltips.ofSelection")}`,
           ]
-        : [`${item.count.toLocaleString()}`, `${formatPercentage(item.count, chartData.sumTotal)} of all rows`];
+        : [`${item.count.toLocaleString()}`, `${formatPercentage(item.count, chartData.sumTotal)} ${$_("charts.countPlot.tooltips.ofAllRows")}`];
     } else {
       title = hasSelection
         ? [
             `${item.countSelected.toLocaleString()} / ${item.count.toLocaleString()} (${formatPercentage(item.countSelected, item.count)})`,
-            `${formatPercentage(item.countSelected, chartData.sumSelected)} of selection`,
-            `(Occurrences in the list values)`,
+            `${formatPercentage(item.countSelected, chartData.sumSelected)} ${$_("charts.countPlot.tooltips.ofSelection")}`,
+            $_("charts.countPlot.occurrencesInLists"),
           ]
         : [
             `${item.count.toLocaleString()}`,
-            `${formatPercentage(item.count, chartData.sumTotal)} of all occurrences`,
-            `(Occurrences in the list values)`,
+            `${formatPercentage(item.count, chartData.sumTotal)} ${$_("charts.countPlot.tooltips.ofAllOccurrences")}`,
+            $_("charts.countPlot.occurrencesInLists"),
           ];
     }
 

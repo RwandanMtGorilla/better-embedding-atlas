@@ -96,7 +96,12 @@
       "showLess": "↑ Up to {count} values",
       "null": "(null)",
       "other": "(other)",
-      "occurrencesInLists": "(Occurrences in lists)"
+      "occurrencesInLists": "(Occurrences in lists)",
+      "tooltips": {
+        "ofSelection": "of selection",
+        "ofAllRows": "of all rows",
+        "ofAllOccurrences": "of all occurrences"
+      }
     },
     "embedding": {
       "colorLabel": "Color",
@@ -148,6 +153,10 @@
     },
     "table": {
       "columns": "Columns"
+    },
+    "widgets": {
+      "normalize": "Normalize:",
+      "off": "off"
     }
   },
   "layout": {
