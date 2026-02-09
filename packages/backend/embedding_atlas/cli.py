@@ -466,6 +466,19 @@ def load_from_chromadb(
     default=None,
     help="Maximum number of collections to keep loaded in memory (LRU cache). Overrides MAX_CACHED_COLLECTIONS env var. Default: 5.",
 )
+@click.option(
+    "--enable-incremental/--no-incremental",
+    "enable_incremental",
+    default=False,
+    help="Enable incremental UMAP computation. When enabled, new data points can be added to existing projections without full recomputation.",
+)
+@click.option(
+    "--incremental-threshold",
+    "incremental_threshold",
+    type=float,
+    default=0.2,
+    help="Maximum ratio of new points for incremental computation. Above this threshold, full recomputation is triggered. Default: 0.2 (20%%).",
+)
 @click.version_option(version=__version__, package_name="embedding_atlas")
 def main(
     inputs,
@@ -507,6 +520,8 @@ def main(
     labels: str | None,
     multi_collection_flag: bool | None,
     max_cached_arg: int | None,
+    enable_incremental: bool,
+    incremental_threshold: float,
 ):
     logging.basicConfig(
         level=logging.INFO,
@@ -547,11 +562,19 @@ def main(
             umap_args["metric"] = umap_metric
 
         from .data_source_manager import DataSourceManager
+        from .incremental_umap import IncrementalUMAPConfig
         from .server import make_multi_server
 
         logging.info("Starting in multi-collection mode")
         logging.info(f"ChromaDB: {resolved_chroma_host}:{resolved_chroma_port}")
         logging.info(f"Max cached collections: {max_cached}")
+        if enable_incremental:
+            logging.info(f"Incremental UMAP enabled (threshold: {incremental_threshold:.0%})")
+
+        # Build incremental config
+        incremental_config = IncrementalUMAPConfig(
+            max_new_points_ratio=incremental_threshold,
+        )
 
         manager = DataSourceManager(
             chroma_host=resolved_chroma_host,
@@ -559,6 +582,8 @@ def main(
             max_cached=max_cached,
             umap_args=umap_args,
             duckdb_uri=duckdb,
+            enable_incremental=enable_incremental,
+            incremental_config=incremental_config,
         )
 
         if static is None:

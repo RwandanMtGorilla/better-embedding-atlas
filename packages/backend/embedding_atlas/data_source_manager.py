@@ -16,6 +16,11 @@ import pandas as pd
 
 from .chroma_client import ChromaDBClient, chroma_data_to_dataframe
 from .data_source import DataSource
+from .incremental_umap import (
+    IncrementalProjectionCache,
+    IncrementalUMAPConfig,
+    IncrementalUMAPProcessor,
+)
 from .options import make_embedding_atlas_props
 from .projection import Projection, _run_umap
 from .utils import Hasher, cache_path
@@ -140,12 +145,16 @@ class DataSourceManager:
         max_cached: int = 5,
         umap_args: dict | None = None,
         duckdb_uri: str = "server",
+        enable_incremental: bool = False,
+        incremental_config: IncrementalUMAPConfig | None = None,
     ):
         self.chroma_host = chroma_host
         self.chroma_port = chroma_port
         self.max_cached = max_cached
         self.umap_args = umap_args or {}
         self.duckdb_uri = duckdb_uri
+        self.enable_incremental = enable_incremental
+        self.incremental_config = incremental_config or IncrementalUMAPConfig()
 
         # LRU cache using OrderedDict
         self._sources: OrderedDict[str, ManagedDataSource] = OrderedDict()
@@ -268,7 +277,11 @@ class DataSourceManager:
                 message=f"已获取 {row_count} 条文档",
             )
 
-            # Step 2: Check cache
+            # Step 2: Check cache and compute projection
+            # Use collection name as cache key for incremental mode
+            incremental_cache_file = cache_path("projections") / f"incremental_{collection_name}"
+
+            # Legacy cache key based on content hash
             hasher = Hasher()
             hasher.update(
                 {
@@ -281,17 +294,99 @@ class DataSourceManager:
                 }
             )
             cache_key = hasher.hexdigest()
-            cache_file = cache_path("projections") / cache_key
+            legacy_cache_file = cache_path("projections") / cache_key
 
             proj = None
-            if Projection.exists(cache_file):
-                managed.add_log("发现缓存的投影数据，正在加载...", progress=30)
+
+            # Try incremental mode first if enabled
+            if self.enable_incremental:
+                managed.add_log("增量模式已启用，检查增量缓存...", progress=25)
+
+                if IncrementalProjectionCache.supports_incremental(incremental_cache_file):
+                    managed.add_log("发现增量缓存，正在加载...", progress=30)
+                    managed.update_progress(
+                        LoadingStatus.LOADING_METADATA,
+                        progress=30,
+                        message="发现增量缓存，正在检查...",
+                    )
+
+                    # Load cached IDs to check if we need incremental update
+                    try:
+                        cached = await asyncio.to_thread(
+                            IncrementalProjectionCache.load,
+                            incremental_cache_file,
+                            False,  # Don't load model yet
+                        )
+
+                        cached_id_set = set(cached.ids)
+                        new_id_set = set(data.ids)
+
+                        # Check if IDs match exactly
+                        if cached_id_set == new_id_set and cached.ids == data.ids:
+                            managed.add_log("ID 完全匹配，使用缓存投影", progress=35)
+                            proj = cached.to_projection()
+                        elif new_id_set - cached_id_set:
+                            # New IDs added - try incremental update
+                            added_count = len(new_id_set - cached_id_set)
+                            removed_count = len(cached_id_set - new_id_set)
+
+                            if removed_count > 0:
+                                managed.add_log(
+                                    f"检测到 {removed_count} 条数据被删除，需要全量重算",
+                                    progress=35,
+                                )
+                            else:
+                                managed.add_log(
+                                    f"检测到 {added_count} 条新数据，尝试增量计算",
+                                    progress=35,
+                                )
+
+                                # Need to load embeddings for incremental update
+                                managed.add_log("正在从 ChromaDB 获取向量数据...", progress=40)
+                                managed.update_progress(
+                                    LoadingStatus.LOADING_EMBEDDINGS,
+                                    progress=40,
+                                    message="正在从 ChromaDB 获取向量数据...",
+                                )
+
+                                embeddings = await asyncio.to_thread(
+                                    client.get_embeddings, collection_name
+                                )
+                                managed.add_log(f"已获取 {len(embeddings)} 个向量", progress=50)
+
+                                managed.add_log("正在执行增量 UMAP 计算...", progress=60)
+                                managed.update_progress(
+                                    LoadingStatus.COMPUTING_PROJECTION,
+                                    progress=60,
+                                    message=f"正在执行增量 UMAP 计算 ({added_count} 个新向量)...",
+                                )
+
+                                processor = IncrementalUMAPProcessor(self.incremental_config)
+                                incremental_result = await asyncio.to_thread(
+                                    processor.compute_or_update,
+                                    embeddings,
+                                    data.ids,
+                                    incremental_cache_file,
+                                    self.umap_args,
+                                )
+                                proj = incremental_result.to_projection()
+                                managed.add_log("增量 UMAP 计算完成", progress=75)
+                        else:
+                            managed.add_log("缓存 ID 不匹配，需要重新计算", progress=35)
+
+                    except Exception as e:
+                        logger.warning(f"Failed to use incremental cache: {e}")
+                        managed.add_log(f"增量缓存加载失败: {e}", progress=35)
+
+            # Fallback to legacy cache if incremental didn't work
+            if proj is None and Projection.exists(legacy_cache_file):
+                managed.add_log("检查传统缓存...", progress=30)
                 managed.update_progress(
                     LoadingStatus.LOADING_METADATA,
                     progress=30,
                     message="发现缓存的投影数据，正在加载...",
                 )
-                proj = await asyncio.to_thread(Projection.load, cache_file)
+                proj = await asyncio.to_thread(Projection.load, legacy_cache_file)
 
                 if proj.projection.shape[0] != row_count:
                     logger.warning(
@@ -323,12 +418,25 @@ class DataSourceManager:
                     message=f"正在计算 UMAP 投影 ({len(embeddings)} 个向量)...",
                 )
 
-                proj = await asyncio.to_thread(_run_umap, embeddings, self.umap_args)
-                managed.add_log("UMAP 投影计算完成", progress=75)
+                if self.enable_incremental:
+                    # Use incremental processor for full computation (saves model for future)
+                    processor = IncrementalUMAPProcessor(self.incremental_config)
+                    incremental_result = await asyncio.to_thread(
+                        processor.compute_or_update,
+                        embeddings,
+                        data.ids,
+                        incremental_cache_file,
+                        self.umap_args,
+                    )
+                    proj = incremental_result.to_projection()
+                    managed.add_log("UMAP 投影计算完成（已保存增量缓存）", progress=75)
+                else:
+                    proj = await asyncio.to_thread(_run_umap, embeddings, self.umap_args)
+                    managed.add_log("UMAP 投影计算完成", progress=75)
 
-                # Save to cache
-                await asyncio.to_thread(Projection.save, cache_file, proj)
-                managed.add_log(f"投影已保存到缓存", progress=78)
+                    # Save to legacy cache
+                    await asyncio.to_thread(Projection.save, legacy_cache_file, proj)
+                    managed.add_log("投影已保存到缓存", progress=78)
 
             managed.add_log("正在构建数据框...", progress=80)
             managed.update_progress(
