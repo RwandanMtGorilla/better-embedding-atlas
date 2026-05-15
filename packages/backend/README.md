@@ -69,3 +69,28 @@ If this column is specified, you'll be able to see nearest neighbors for a selec
 ## Local Development
 
 Launch Embedding Altas with a wine reviews dataset with `./start.sh` and the MNIST dataset with `./start_image.sh`.
+
+```sh
+cd D:\projects\better-embedding-atlas
+
+uv venv --python 3.12
+.venv\Scripts\activate
+
+cd packages/backend
+# 可编辑安装
+uv pip install -e .
+
+# 构建前端
+npm install
+
+cd packages\viewer
+
+# 此项依赖其他包先编译 首次运行需要 在根目录build (或在windows: .\scripts\build.bat) 
+npm run build 
+
+uv run --active embedding-atlas  --static ../viewer/dist --host 0.0.0.0
+
+uv run --active embedding-atlas  --static packages/viewer/dist --host 0.0.0.0 --port 15055
+
+uv pip install sse-starlette
+```
