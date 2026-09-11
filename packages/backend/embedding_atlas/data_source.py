@@ -127,4 +127,41 @@ $PYTHON_CMD -m http.server 5051
 """
             zip.writestr("start.sh", start_sh)
 
+            # macOS opens .command files in Terminal when they are double-clicked.
+            # Finder does not guarantee that the script's directory is the current
+            # working directory, so enter it explicitly before serving the files.
+            start_command = """\
+#!/bin/bash
+cd -- "$(dirname -- "$0")" || exit 1
+
+echo "Starting Embedding Atlas..."
+echo
+
+if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
+    echo "[Error] Python not found. Please install Python first."
+    read -r -p "Press Enter to close..."
+    exit 1
+fi
+
+PYTHON_CMD="python3"
+if ! command -v python3 &> /dev/null; then
+    PYTHON_CMD="python"
+fi
+
+echo "Server starting at: http://localhost:5051"
+echo "Press Ctrl+C to stop."
+echo
+
+open http://localhost:5051
+"$PYTHON_CMD" -m http.server 5051
+"""
+            command_info = zipfile.ZipInfo("start.command")
+            command_info.create_system = 3  # Unix, so executable mode is preserved.
+            command_info.external_attr = 0o100755 << 16
+            zip.writestr(
+                command_info,
+                start_command,
+                compress_type=zipfile.ZIP_DEFLATED,
+            )
+
         return io.getvalue()
