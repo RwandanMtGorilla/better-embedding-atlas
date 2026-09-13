@@ -153,15 +153,17 @@ def load_from_chromadb(
         chroma_data_to_dataframe,
     )
     from .projection import Projection, _run_umap
+    from .question_clustering import add_question_cluster_column, cached_cluster_questions
 
     logger = logging.getLogger(__name__)
 
     # Initialize client
     client = ChromaDBClient(host=chroma_host, port=chroma_port)
 
-    # Step 1: Get documents and metadata (for cache check)
-    logger.info("Fetching documents and metadata from ChromaDB...")
-    data = client.get_documents_and_metadata(collection_name)
+    # Read paired records before clustering or looking up a projection cache.
+    logger.info("Fetching documents, metadata and embeddings from ChromaDB...")
+    data = client.get_snapshot(collection_name)
+    clusters = cached_cluster_questions(data.documents, data.embeddings)
     row_count = len(data.ids)
 
     # Step 2: Compute cache key
@@ -170,6 +172,8 @@ def load_from_chromadb(
         {
             "version": 1,
             "source": "chromadb",
+            "ids": data.ids,
+            "embeddings": data.embeddings,
             "collection": collection_name,
             "documents": data.documents,
             "row_count": row_count,
@@ -200,8 +204,7 @@ def load_from_chromadb(
 
     # Step 4: Compute projection if needed
     if proj is None:
-        logger.info("Fetching embeddings from ChromaDB...")
-        embeddings = client.get_embeddings(collection_name)
+        embeddings = data.embeddings
 
         logger.info("Running UMAP on %d embeddings...", len(embeddings))
         proj = _run_umap(embeddings, umap_args)
@@ -212,6 +215,7 @@ def load_from_chromadb(
 
     # Step 5: Convert to DataFrame
     df = chroma_data_to_dataframe(data)
+    add_question_cluster_column(df, clusters.labels)
 
     # Step 6: Apply query and sample if specified
     if query is not None:
@@ -757,6 +761,7 @@ def main(
                 compute_vector_projection(
                     df,
                     vector,
+                    text=text,
                     x=x_column,
                     y=y_column,
                     neighbors=new_neighbors_column,

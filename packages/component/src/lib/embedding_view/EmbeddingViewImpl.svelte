@@ -16,7 +16,9 @@
     totalCount: number | null;
     maxDensity: number | null;
     labels?: Label[] | null;
-    queryClusterLabels: ((clusters: Rectangle[][]) => Promise<(string | null)[]>) | null;
+    queryClusterLabels:
+      | ((clusters: Rectangle[][], context?: { levels: number[] }) => Promise<(string | null)[]>)
+      | null;
     tooltip: Selection | null;
     selection: Selection[] | null;
     querySelection: ((x: number, y: number, unitDistance: number) => Promise<Selection | null>) | null;
@@ -610,7 +612,7 @@
 
     let cacheKey = await cacheKeyForObject({
       autoLabel: {
-        version: 1,
+        version: 3,
         viewport,
         stopWords: config?.autoLabelStopWords,
         densityThreshold: config?.autoLabelDensityThreshold,
@@ -628,7 +630,12 @@
     newClusters = newClusters.concat(await generateClusters(renderer, 5, viewport));
 
     if (queryClusterLabels) {
-      let labels = await queryClusterLabels(newClusters.map((x) => x.rects));
+      let labels = await queryClusterLabels(
+        newClusters.map((x) => x.rects),
+        {
+          levels: newClusters.map((x) => (x.bandwidth == 10 ? 0 : 1)),
+        },
+      );
       for (let i = 0; i < newClusters.length; i++) {
         newClusters[i].label = labels[i];
       }

@@ -331,13 +331,17 @@
   }
 
   // Cluster Labels
-  async function queryClusterLabels(clusters: Rectangle[][]): Promise<(string | null)[]> {
+  async function queryClusterLabels(
+    clusters: Rectangle[][],
+    context?: { levels: number[] },
+  ): Promise<(string | null)[]> {
     if (text == null) {
       return clusters.map(() => null);
     }
     // Create text summarizer (in the worker)
     let summarizer = await textSummarizerCreate({
       regions: clusters,
+      levels: context?.levels,
       stopWords: config?.autoLabelStopWords ?? null,
     });
     // Add text data to the summarizer

@@ -23,9 +23,10 @@ cd ..\backend
 python -m embedding_atlas.cli ..\..\data\producthunt_results.csv --static ..\viewer\dist
 python -m embedding_atlas.cli C:\Users\15848\Downloads\user_profiles_v2.csv --static ..\viewer\dist
 
+# 在根目录
 uv run --active embedding-atlas  --static packages/viewer/dist --host 0.0.0.0 --port 15055
-
-uv pip install sse-starlette
+                                                                  
+uv pip install chromadb
 ```
 
 后端配置位于 packages/backend/.env.example

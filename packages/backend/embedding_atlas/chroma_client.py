@@ -243,6 +243,36 @@ class ChromaDBClient:
 
         return np.array(all_embeddings)
 
+    def get_snapshot(self, collection_name: str) -> ChromaCollectionData:
+        """Read paired records in one response, then sort by stable Chroma ID.
+
+        Avoid separate document/vector reads and offset pagination across writes.
+        A database-level transactional snapshot still depends on the server.
+        """
+        collection = self._client.get_collection(collection_name)
+        result = collection.get(include=["documents", "metadatas", "embeddings"])
+        ids = result["ids"]
+        embeddings = result["embeddings"]
+        if not ids or embeddings is None or len(embeddings) != len(ids):
+            raise ChromaDBError("Collection must contain one embedding per record")
+        if len(set(ids)) != len(ids):
+            raise ChromaDBError("Snapshot contains duplicate record IDs")
+        documents = result["documents"]
+        metadatas = result["metadatas"]
+        if documents is None:
+            documents = [None] * len(ids)
+        if metadatas is None:
+            metadatas = [None] * len(ids)
+        if len(documents) != len(ids) or len(metadatas) != len(ids):
+            raise ChromaDBError("Snapshot records are not aligned")
+        order = sorted(range(len(ids)), key=lambda i: ids[i])
+        return ChromaCollectionData(
+            ids=[ids[i] for i in order],
+            documents=[documents[i] for i in order],
+            metadatas=[metadatas[i] for i in order],
+            embeddings=np.asarray(embeddings, dtype=np.float32)[order],
+        )
+
     def get_all_data(
         self,
         collection_name: str,

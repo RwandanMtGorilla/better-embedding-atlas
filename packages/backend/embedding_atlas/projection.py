@@ -1,12 +1,18 @@
 # Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Literal
 
 import numpy as np
 import pandas as pd
 
+from .question_clustering import (
+    QuestionClusteringConfig,
+    add_question_cluster_column,
+    cached_cluster_questions,
+)
 from .utils import Hasher, cache_path, logger
 
 
@@ -17,6 +23,7 @@ class Projection:
 
     knn_indices: np.ndarray
     knn_distances: np.ndarray
+    question_labels: list[str | None] | None = None
 
     @staticmethod
     def exists(path: Path):
@@ -28,6 +35,9 @@ class Projection:
 
     @staticmethod
     def save(path: Path, value: "Projection"):
+        path.with_suffix(".question_labels.json").write_text(
+            json.dumps(value.question_labels, ensure_ascii=False), encoding="utf-8"
+        )
         np.save(
             path.with_suffix(".projection.npy"),
             value.projection,
@@ -46,7 +56,12 @@ class Projection:
 
     @staticmethod
     def load(path: Path) -> "Projection":
+        labels_path = path.with_suffix(".question_labels.json")
         return Projection(
+            question_labels=(
+                json.loads(labels_path.read_text(encoding="utf-8"))
+                if labels_path.exists() else None
+            ),
             projection=np.load(
                 path.with_suffix(".projection.npy"),
                 allow_pickle=False,
@@ -190,10 +205,12 @@ def _projection_for_texts(
         for k, v in (text_projector_args or {}).items()
         if k not in excluded_text_projector_args
     }
+    clustering_config = QuestionClusteringConfig.from_env()
     hasher = Hasher()
     hasher.update(
         {
-            "version": 2,
+            "version": 3,
+            "question_clustering": asdict(clustering_config),
             "texts": texts,
             "model": model,
             "batch_size": batch_size,
@@ -205,7 +222,7 @@ def _projection_for_texts(
     digest = hasher.hexdigest()
     cpath = cache_path("projections") / digest
 
-    if Projection.exists(cpath):
+    if Projection.exists(cpath) and cpath.with_suffix(".question_labels.json").exists():
         logger.info("Using cached projection from %s", str(cpath))
         return Projection.load(cpath)
 
@@ -225,7 +242,9 @@ def _projection_for_texts(
     )
     hidden_vectors = text_projector(texts, batch_size, model, text_projector_args)
 
+    clusters = cached_cluster_questions(texts, hidden_vectors, clustering_config)
     result = _run_umap(hidden_vectors, umap_args)
+    result.question_labels = clusters.labels
     Projection.save(cpath, result)
     return result
 
@@ -395,7 +414,7 @@ def compute_text_projection(
     Returns:
         The input DataFrame with added columns for X, Y coordinates and nearest neighbors.
     """
-    text_series = data_frame[text].astype(str).fillna("")
+    text_series = data_frame[text].fillna("").astype(str)
     text_projector_callback = _find_text_projector_callback(text_projector)
 
     proj = _projection_for_texts(
@@ -406,6 +425,8 @@ def compute_text_projection(
         text_projector=text_projector_callback,
         umap_args=umap_args,
     )
+    if proj.question_labels is not None:
+        add_question_cluster_column(data_frame, proj.question_labels)
     data_frame[x] = proj.projection[:, 0]
     data_frame[y] = proj.projection[:, 1]
     if neighbors is not None:
@@ -422,6 +443,7 @@ def compute_vector_projection(
     y: str = "projection_y",
     neighbors: str | None = "neighbors",
     umap_args: dict = {},
+    text: str | None = None,
 ):
     """
     Generate 2D projections from pre-existing vector embeddings using UMAP.
@@ -431,6 +453,7 @@ def compute_vector_projection(
 
     Args:
         data_frame: pandas DataFrame containing the vector data to process.
+        text: Optional question text column; enables representative-question clustering.
         vector: str, column name containing the pre-computed vector embeddings.
                 Each entry should be a list or numpy array of numbers.
         x: str, column name where the UMAP X coordinates will be stored.
@@ -459,6 +482,10 @@ def compute_vector_projection(
 
     # Stack all vectors into a single numpy array
     hidden_vectors = np.stack(vector_list)
+
+    if text is not None:
+        clusters = cached_cluster_questions(data_frame[text].tolist(), hidden_vectors)
+        add_question_cluster_column(data_frame, clusters.labels)
 
     # Run UMAP on the pre-existing vectors
     proj = _run_umap(hidden_vectors, umap_args)

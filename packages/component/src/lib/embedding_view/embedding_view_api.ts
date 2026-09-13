@@ -85,8 +85,9 @@ export interface EmbeddingViewProps {
   querySelection?: ((x: number, y: number, unitDistance: number) => Promise<DataPoint | null>) | null;
 
   /** An async function that returns labels for a list of clusters.
-   *  Each cluster is given as a list of rectangles that approximately cover the region. */
-  queryClusterLabels?: ((clusters: Rectangle[][]) => Promise<(string | null)[]>) | null;
+   *  Each cluster is given as a list of rectangles that approximately cover the region.
+   *  Optional context supplies the zoom level for each cluster, in the same order. */
+  queryClusterLabels?: ((clusters: Rectangle[][], context?: { levels: number[] }) => Promise<(string | null)[]>) | null;
 
   /** A custom renderer to draw the tooltip content. */
   customTooltip?: CustomComponent<HTMLDivElement, { tooltip: DataPoint }> | null;
