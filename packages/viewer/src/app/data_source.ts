@@ -23,6 +23,12 @@ export interface DataSource {
     onStatus: (message: string) => void,
   ): Promise<Partial<EmbeddingAtlasProps>>;
 
+  /** Releases resources owned by this data source when the viewer unmounts. */
+  dispose?: () => Promise<void> | undefined;
+
+  /** Generated representative column, which can use a suffix to avoid a collision. */
+  representativeItemColumn?: string;
+
   /** Downloads a zip archive of the dataset plus static assets of the viewer */
   downloadArchive?: () => Promise<void>;
 

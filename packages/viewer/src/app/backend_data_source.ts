@@ -24,6 +24,7 @@ function joinUrl(a: string, b: string) {
 
 interface Metadata {
   props: Partial<EmbeddingAtlasProps>;
+  representative_item_column?: string;
 
   isStatic?: boolean;
   database?: {
@@ -35,10 +36,15 @@ interface Metadata {
 
 export class BackendDataSource implements DataSource {
   private serverUrl: string;
+  private closeDatabase?: () => Promise<void>;
+  representativeItemColumn?: string;
   downloadArchive: (() => Promise<void>) | undefined = undefined;
   downloadSelection: ((predicate: string | null, format: ExportFormat) => Promise<void>) | undefined = undefined;
 
-  constructor(serverUrl: string) {
+  constructor(
+    serverUrl: string,
+    private revision?: string,
+  ) {
     if (serverUrl.startsWith("http")) {
       this.serverUrl = serverUrl;
     } else {
@@ -54,14 +60,19 @@ export class BackendDataSource implements DataSource {
     onStatus: (message: string) => void,
   ): Promise<Partial<EmbeddingAtlasProps>> {
     let metadata = await this.metadata();
+    this.representativeItemColumn = metadata.representative_item_column;
 
     onStatus("Initializing database...");
     let dbType = metadata.database?.type ?? "wasm";
-    await initializeDatabase(coordinator, dbType, metadata.database?.uri ?? joinUrl(this.serverUrl, "query"));
+    this.closeDatabase = await initializeDatabase(
+      coordinator,
+      dbType,
+      metadata.database?.uri ?? this.endpointUrl("query"),
+    );
 
     if (metadata.database?.load) {
       onStatus("Loading data...");
-      let datasetUrl = joinUrl(this.serverUrl, "dataset.parquet");
+      let datasetUrl = this.endpointUrl("dataset.parquet");
       await coordinator.exec(`
         CREATE OR REPLACE TABLE ${table} AS (SELECT * FROM read_parquet(${SQL.literal(datasetUrl)}));
       `);
@@ -100,8 +111,20 @@ export class BackendDataSource implements DataSource {
     };
   }
 
+  dispose() {
+    return this.closeDatabase?.();
+  }
+
+  private endpointUrl(endpoint: string) {
+    const url = new URL(joinUrl(this.serverUrl, endpoint));
+    if (this.revision) {
+      url.searchParams.set("revision", this.revision);
+    }
+    return url.toString();
+  }
+
   private async fetchEndpoint(endpoint: string, init?: RequestInit) {
-    let resp = await fetch(joinUrl(this.serverUrl, endpoint), init);
+    let resp = await fetch(this.endpointUrl(endpoint), init);
     if (resp.status != 200) {
       throw new Error("ERROR FETCH");
     }

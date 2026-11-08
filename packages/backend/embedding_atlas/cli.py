@@ -473,15 +473,15 @@ def load_from_chromadb(
 @click.option(
     "--enable-incremental/--no-incremental",
     "enable_incremental",
-    default=False,
-    help="Enable incremental UMAP computation. When enabled, new data points can be added to existing projections without full recomputation.",
+    default=True,
+    help="Use incremental UMAP and representative assignment in multi-collection mode (enabled by default).",
 )
 @click.option(
     "--incremental-threshold",
     "incremental_threshold",
     type=float,
     default=0.2,
-    help="Maximum ratio of new points for incremental computation. Above this threshold, full recomputation is triggered. Default: 0.2 (20%%).",
+    help="Maximum cumulative growth since the last UMAP fit before rebuilding the projection and representatives. Default: 0.2 (20%).",
 )
 @click.version_option(version=__version__, package_name="embedding_atlas")
 def main(

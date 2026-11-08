@@ -1,60 +1,25 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
-  import { onMount, onDestroy } from "svelte";
-  import { IconSpinner, IconError, IconCheck, IconEmbeddingView } from "../../assets/icons.js";
-  import { subscribeProgress, type LoadingProgressEvent, type LogEntry } from "../services/api.js";
+  import { IconSpinner, IconError, IconEmbeddingView } from "../../assets/icons.js";
+  import type { LoadingProgressEvent } from "../services/api.js";
 
   interface Props {
     collectionName: string;
-    onReady: () => void;
+    progress: LoadingProgressEvent | null;
   }
 
-  let { collectionName, onReady }: Props = $props();
-
-  let progress: LoadingProgressEvent | null = $state(null);
-  let logs: LogEntry[] = $state([]);
-  let eventSource: EventSource | null = null;
+  let { collectionName, progress }: Props = $props();
+  let logs = $derived(progress?.logs ?? []);
+  let isEmpty = $derived(progress?.status === "ready" && progress.row_count === 0);
 
   const statusLabels: Record<string, string> = {
     pending: "等待中",
     loading_metadata: "加载文档和元数据",
     loading_embeddings: "加载向量数据",
-    computing_projection: "计算UMAP投影",
+    computing_projection: "计算投影和代表项",
     ready: "加载完成",
     error: "加载失败",
   };
-
-  onMount(() => {
-    eventSource = subscribeProgress(
-      collectionName,
-      (event) => {
-        progress = event;
-        if (event.logs) {
-          logs = event.logs;
-        }
-        if (event.status === "ready") {
-          setTimeout(() => {
-            onReady();
-          }, 500);
-        }
-      },
-      (error) => {
-        console.error("Progress stream error:", error);
-        progress = {
-          status: "error",
-          progress: 0,
-          message: "连接失败",
-          error: "无法连接到服务器",
-        };
-      },
-    );
-  });
-
-  onDestroy(() => {
-    if (eventSource) {
-      eventSource.close();
-    }
-  });
 </script>
 
 <div class="fixed inset-0 flex items-center justify-center bg-slate-200 dark:bg-slate-900 p-4">
@@ -68,7 +33,7 @@
             {collectionName}
           </h2>
           <p class="text-sm text-slate-500 dark:text-slate-400">
-            {progress ? statusLabels[progress.status] || progress.status : "正在连接..."}
+            {progress ? progress.message || statusLabels[progress.status] || progress.status : "正在连接..."}
           </p>
         </div>
       </div>
@@ -91,13 +56,10 @@
         </div>
 
         <!-- Success/Error Messages -->
-        {#if progress.status === "ready"}
-          <div class="flex items-center gap-2 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-md mb-4">
-            <IconCheck class="w-5 h-5 text-green-500 flex-shrink-0" />
-            <span class="text-sm text-green-700 dark:text-green-300">知识库加载成功，正在跳转...</span>
-          </div>
-        {:else if progress.status === "error"}
-          <div class="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md mb-4">
+        {#if progress.status === "error"}
+          <div
+            class="flex items-start gap-2 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-md mb-4"
+          >
             <IconError class="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
             <div class="flex-1">
               <p class="text-sm text-red-700 dark:text-red-300 font-medium mb-1">加载失败</p>
@@ -113,7 +75,9 @@
       {#if logs.length > 0}
         <div class="mt-4">
           <h3 class="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">加载日志</h3>
-          <div class="flex flex-col gap-1 p-3 border rounded-md bg-slate-50 dark:bg-slate-900 border-slate-300 dark:border-slate-700 max-h-64 overflow-y-auto">
+          <div
+            class="flex flex-col gap-1 p-3 border rounded-md bg-slate-50 dark:bg-slate-900 border-slate-300 dark:border-slate-700 max-h-64 overflow-y-auto"
+          >
             {#each logs as log, i}
               {@const isLast = i === logs.length - 1}
               <div
@@ -122,7 +86,7 @@
                   : 'text-slate-300 dark:text-slate-600'}"
               >
                 <div class="w-7 flex-none">
-                  {#if isLast && !log.error}
+                  {#if isLast && !log.error && progress?.status !== "ready"}
                     <IconSpinner class="w-5 h-5 text-blue-500" />
                   {:else if log.error}
                     <IconError class="w-5 h-5 text-red-400" />
@@ -143,7 +107,7 @@
       {/if}
 
       <!-- Actions -->
-      {#if progress?.status === "error"}
+      {#if progress?.status === "error" || isEmpty}
         <div class="flex justify-center mt-6">
           <button
             onclick={() => (window.location.hash = "#/")}

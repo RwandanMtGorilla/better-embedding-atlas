@@ -66,7 +66,12 @@ export async function getQueryPayload(key: string, type: "text" | "object" = "ob
   }
 }
 
-export async function setQueryPayload(key: string, object: any, type: "text" | "object" = "object") {
+export async function setQueryPayload(
+  key: string,
+  object: any,
+  type: "text" | "object" = "object",
+  isCurrent?: () => boolean,
+) {
   let value: string | undefined = undefined;
   if (object !== undefined) {
     if (type == "text") {
@@ -81,6 +86,9 @@ export async function setQueryPayload(key: string, object: any, type: "text" | "
     }
   }
 
+  if (isCurrent && !isCurrent()) {
+    return;
+  }
   let records = parseHash(window.location.hash);
   if (value === undefined) {
     delete records[key];

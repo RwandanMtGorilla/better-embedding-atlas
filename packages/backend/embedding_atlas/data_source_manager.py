@@ -7,29 +7,34 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
-from typing import TYPE_CHECKING
+from uuid import uuid4
 
+import duckdb
 import numpy as np
-import pandas as pd
 
-from .chroma_client import ChromaDBClient, chroma_data_to_dataframe
+from .chroma_client import ChromaCollectionData, ChromaDBClient, chroma_data_to_dataframe
 from .data_source import DataSource
 from .incremental_umap import (
+    IncrementalProjectionCache,
     IncrementalUMAPConfig,
     IncrementalUMAPProcessor,
 )
 from .options import make_embedding_atlas_props
 from .projection import Projection, _run_umap
-from .question_clustering import cached_cluster_questions, add_question_cluster_column
+from .question_clustering import (
+    QuestionClusteringConfig,
+    add_question_cluster_column,
+    cached_cluster_questions,
+    update_collection_clusters,
+)
 from .utils import Hasher, cache_path
 from .version import __version__
 
-if TYPE_CHECKING:
-    pass
-
 logger = logging.getLogger(__name__)
+
+REFRESH_INTERVAL = 15.0
 
 
 class LoadingStatus(Enum):
@@ -62,18 +67,48 @@ class LoadingProgress:
 
 
 @dataclass
+class CollectionRevision:
+    """A published snapshot. In-flight requests keep its data and connection alive."""
+
+    revision: str
+    row_count: int
+    fit_id: str | None = None
+    data_source: DataSource | None = None
+    query_connection: duckdb.DuckDBPyConnection | None = None
+    incremental_cache: IncrementalProjectionCache | None = None
+
+
+@dataclass
 class ManagedDataSource:
-    """A managed data source with loading state."""
+    """Loading and refresh state for one collection."""
 
     collection_name: str
-    data_source: DataSource | None = None
+    published: CollectionRevision | None = None
     loading_progress: LoadingProgress = field(
         default_factory=lambda: LoadingProgress(LoadingStatus.PENDING)
     )
     loading_task: asyncio.Task | None = None
-    subscribers: list[asyncio.Queue] = field(default_factory=list)
+    last_check: float = -float("inf")
+    refreshing: bool = False
+    refresh_error: str | None = None
+    subscribers: list[asyncio.Queue[None]] = field(default_factory=list)
     logs: list[dict] = field(default_factory=list)
-    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def progress_event(self) -> dict:
+        published = self.published
+        return self.loading_progress.to_dict() | {
+            "revision": published.revision if published else None,
+            "row_count": published.row_count if published else None,
+            "fit_id": published.fit_id if published else None,
+            "refreshing": self.refreshing,
+            "refresh_error": self.refresh_error,
+        }
+
+    def notify(self):
+        # Queue notifications, then read the latest state when the stream sends it.
+        for queue in self.subscribers:
+            if not queue.full():
+                queue.put_nowait(None)
 
     def add_log(self, message: str, progress: float = 0.0, error: bool = False):
         """Add a log entry and notify subscribers."""
@@ -85,33 +120,12 @@ class ManagedDataSource:
         }
         self.logs.append(log_entry)
         logger.info(f"[{self.collection_name}] {message}")
-        # Notify subscribers
-        for queue in self.subscribers:
-            try:
-                queue.put_nowait(self.loading_progress)
-            except asyncio.QueueFull:
-                pass
+        self.notify()
 
-    def update_progress(
-        self,
-        status: LoadingStatus,
-        progress: float = 0.0,
-        message: str = "",
-        error: str | None = None,
-    ):
-        """Update progress and notify all subscribers."""
-        self.loading_progress = LoadingProgress(
-            status=status,
-            progress=progress,
-            message=message,
-            error=error,
-        )
-        # Notify subscribers
-        for queue in self.subscribers:
-            try:
-                queue.put_nowait(self.loading_progress)
-            except asyncio.QueueFull:
-                pass  # Skip if queue is full
+    def report(self, status: LoadingStatus, progress: float, message: str):
+        if self.published is None:
+            self.loading_progress = LoadingProgress(status, progress, message)
+        self.add_log(message, progress)
 
 
 def find_column_name(existing_names, candidate):
@@ -145,7 +159,7 @@ class DataSourceManager:
         max_cached: int = 5,
         umap_args: dict | None = None,
         duckdb_uri: str = "server",
-        enable_incremental: bool = False,
+        enable_incremental: bool = True,
         incremental_config: IncrementalUMAPConfig | None = None,
     ):
         self.chroma_host = chroma_host
@@ -162,14 +176,16 @@ class DataSourceManager:
 
         # ChromaDB client for listing collections
         self._chroma_client: ChromaDBClient | None = None
+        self._client_lock = threading.Lock()
 
     def _get_chroma_client(self) -> ChromaDBClient:
         """Get or create ChromaDB client."""
-        if self._chroma_client is None:
-            self._chroma_client = ChromaDBClient(
-                host=self.chroma_host, port=self.chroma_port
-            )
-        return self._chroma_client
+        with self._client_lock:
+            if self._chroma_client is None:
+                self._chroma_client = ChromaDBClient(
+                    host=self.chroma_host, port=self.chroma_port
+                )
+            return self._chroma_client
 
     def list_collections(self) -> list[dict]:
         """List all available collections from ChromaDB."""
@@ -192,47 +208,68 @@ class DataSourceManager:
                 self._sources.move_to_end(collection_name)
             return self._sources[collection_name]
 
-    def subscribe_progress(self, collection_name: str) -> asyncio.Queue:
+    def subscribe_progress(self, collection_name: str) -> asyncio.Queue[None]:
         """Subscribe to progress updates for a collection."""
         managed = self.get_managed(collection_name)
-        queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+        queue: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
         managed.subscribers.append(queue)
-
-        # Send current progress immediately
-        try:
-            queue.put_nowait(managed.loading_progress)
-        except asyncio.QueueFull:
-            pass
-
+        queue.put_nowait(None)
         return queue
 
-    def unsubscribe_progress(self, collection_name: str, queue: asyncio.Queue):
+    def unsubscribe_progress(self, collection_name: str, queue: asyncio.Queue[None]):
         """Unsubscribe from progress updates."""
         with self._lock:
             if collection_name in self._sources:
                 managed = self._sources[collection_name]
                 if queue in managed.subscribers:
                     managed.subscribers.remove(queue)
+        self._evict_if_needed()
 
     async def get_or_load(self, collection_name: str) -> ManagedDataSource:
         """Get a data source, loading it if necessary."""
         managed = self.get_managed(collection_name)
 
-        # Already loaded
-        if managed.data_source is not None:
+        if managed.published is not None:
             return managed
 
-        # Already loading
-        if managed.loading_task is not None and not managed.loading_task.done():
-            await managed.loading_task
-            return managed
-
-        # Start loading
-        managed.loading_task = asyncio.create_task(self._load_data_source(managed))
-        await managed.loading_task
+        if managed.loading_task is None or managed.loading_task.done():
+            managed.loading_task = asyncio.create_task(self._load_data_source(managed))
+            managed.loading_task.add_done_callback(self._evict_if_needed)
+        await asyncio.shield(managed.loading_task)
         return managed
 
-    def _evict_if_needed(self):
+    def check_for_refresh(self, managed: ManagedDataSource):
+        now = time.monotonic()
+        if (
+            managed.published is None
+            or now - managed.last_check < REFRESH_INTERVAL
+            or managed.loading_task is not None and not managed.loading_task.done()
+        ):
+            return
+        managed.last_check = now
+        managed.loading_task = asyncio.create_task(self._refresh_if_changed(managed))
+        managed.loading_task.add_done_callback(self._evict_if_needed)
+
+    async def _refresh_if_changed(self, managed: ManagedDataSource):
+        try:
+            client = await asyncio.to_thread(self._get_chroma_client)
+            count = await asyncio.to_thread(client.get_collection_count, managed.collection_name)
+        except Exception as error:
+            logger.warning("Could not check collection %s: %s", managed.collection_name, error)
+            managed.refresh_error = str(error)
+            managed.notify()
+            return
+
+        if count != managed.published.row_count:
+            managed.refreshing = True
+            managed.refresh_error = None
+            managed.notify()
+            await self._load_data_source(managed)
+        elif managed.refresh_error is not None:
+            managed.refresh_error = None
+            managed.notify()
+
+    def _evict_if_needed(self, _task=None):
         """Evict least recently used data sources if over limit."""
         with self._lock:
             while len(self._sources) > self.max_cached:
@@ -242,6 +279,7 @@ class DataSourceManager:
                     if (
                         managed.loading_progress.status == LoadingStatus.READY
                         and len(managed.subscribers) == 0
+                        and (managed.loading_task is None or managed.loading_task.done())
                     ):
                         logger.info(f"Evicting data source: {name}")
                         del self._sources[name]
@@ -251,176 +289,185 @@ class DataSourceManager:
                     break
 
     async def _load_data_source(self, managed: ManagedDataSource):
-        """Load a data source from ChromaDB."""
-        collection_name = managed.collection_name
-
+        """Prepare a snapshot, then publish its data, projection and query table together."""
+        name = managed.collection_name
+        previous = managed.published
+        managed.logs.clear()
         try:
-            # Read paired documents and embeddings in a single response.
-            managed.add_log("开始加载知识库", progress=0)
-            managed.update_progress(
-                LoadingStatus.LOADING_METADATA,
-                progress=0,
-                message="正在从 ChromaDB 获取文档、元数据和向量...",
-            )
-            managed.add_log("正在从 ChromaDB 获取文档、元数据和向量...", progress=5)
+            managed.report(LoadingStatus.LOADING_METADATA, 5, "正在从 ChromaDB 获取文档、元数据和向量...")
+            client = await asyncio.to_thread(self._get_chroma_client)
+            data = await asyncio.to_thread(client.get_snapshot, name, allow_empty=True)
+            managed.report(LoadingStatus.LOADING_METADATA, 20, f"已获取 {len(data.ids)} 条文档")
 
-            client = self._get_chroma_client()
-            data = await asyncio.to_thread(
-                client.get_snapshot, collection_name
-            )
-            row_count = len(data.ids)
-
-            managed.add_log(f"已获取 {row_count} 条文档", progress=20)
-            managed.update_progress(
-                LoadingStatus.LOADING_METADATA,
-                progress=20,
-                message=f"已获取 {row_count} 条文档",
-            )
-
-            embeddings = data.embeddings
-            managed.add_log("正在进行代表问法聚类...", progress=25)
-            managed.update_progress(
-                LoadingStatus.COMPUTING_PROJECTION,
-                progress=25,
-                message="正在进行代表问法聚类...",
-            )
-            clusters = await asyncio.to_thread(cached_cluster_questions, data.documents, embeddings)
-            managed.add_log(
-                f"聚类完成：{len(clusters.representatives)} 个代表问法；"
-                f"精确问法覆盖率 {clusters.unique_coverage:.2%}，"
-                f"请求加权覆盖率 {clusters.request_coverage:.2%}",
-                progress=50,
-            )
-
-            # Content fingerprints invalidate projections after vector edits too.
-            hasher = Hasher()
-            hasher.update({
-                "version": 2,
-                "source": "chromadb",
-                "collection": collection_name,
-                "ids": data.ids,
-                "embeddings": embeddings,
-                "umap_args": self.umap_args,
-            })
-            legacy_cache_file = cache_path("projections") / hasher.hexdigest()
-            managed.update_progress(
-                LoadingStatus.COMPUTING_PROJECTION,
-                progress=60,
-                message="正在计算 UMAP 投影...",
-            )
-            if self.enable_incremental:
-                source_hasher = Hasher()
-                source_hasher.update([self.chroma_host, self.chroma_port, collection_name, self.umap_args])
-                incremental_cache_file = cache_path("projections") / ("questions_" + source_hasher.hexdigest())
-                # Changing an existing vector is treated as removal + addition,
-                # causing the incremental processor to recompute the projection.
-                content_ids = []
-                for row_id, vector in zip(data.ids, embeddings):
-                    row_hasher = Hasher()
-                    row_hasher.update([row_id, vector])
-                    content_ids.append(row_hasher.hexdigest())
-                processor = IncrementalUMAPProcessor(self.incremental_config)
-                result = await asyncio.to_thread(
-                    processor.compute_or_update, embeddings, content_ids,
-                    incremental_cache_file, self.umap_args,
-                )
-                proj = result.to_projection()
-            elif Projection.exists(legacy_cache_file):
-                proj = await asyncio.to_thread(Projection.load, legacy_cache_file)
+            cache_file = self._incremental_cache_file(name) if self.enable_incremental else None
+            cached = None
+            if data.ids:
+                if self.enable_incremental:
+                    if previous is not None:
+                        cached = previous.incremental_cache
+                    elif cache_file is not None:
+                        cached = await asyncio.to_thread(IncrementalProjectionCache.load, cache_file)
+                prepared = await self._prepare_revision(managed, data, cached)
             else:
-                proj = await asyncio.to_thread(_run_umap, embeddings, self.umap_args)
-                await asyncio.to_thread(Projection.save, legacy_cache_file, proj)
-            managed.add_log("UMAP 投影已就绪", progress=78)
+                prepared = CollectionRevision(uuid4().hex, 0)
 
-            managed.add_log("正在构建数据框...", progress=80)
-            managed.update_progress(
-                LoadingStatus.COMPUTING_PROJECTION,
-                progress=80,
-                message="正在构建数据框...",
+            if cache_file is not None and (
+                prepared.incremental_cache is not cached or not data.ids
+            ):
+                await asyncio.to_thread(IncrementalProjectionCache.save, cache_file, prepared.incremental_cache)
+
+            managed.published = prepared
+            managed.refresh_error = None
+            message = "暂无条目" if prepared.row_count == 0 else ("更新完成" if previous else "加载完成")
+            managed.loading_progress = LoadingProgress(LoadingStatus.READY, 100, message)
+            managed.add_log(message, progress=100)
+        except Exception as error:
+            logger.exception("Failed to prepare collection %s", name)
+            if previous is None:
+                managed.loading_progress = LoadingProgress(LoadingStatus.ERROR, error=str(error), message="加载失败")
+                managed.add_log(f"加载失败 {error}", error=True)
+            else:
+                managed.refresh_error = str(error)
+                managed.add_log(f"更新失败 {error}", error=True)
+        finally:
+            managed.refreshing = False
+            managed.notify()
+
+    def _incremental_cache_file(self, name: str):
+        hasher = Hasher()
+        hasher.update([self.chroma_host, self.chroma_port, name, self.umap_args])
+        try:
+            return cache_path("projections") / f"collection_{hasher.hexdigest()}"
+        except OSError as error:
+            logger.warning("Incremental cache unavailable for %s: %s", name, error)
+            return None
+
+    async def _prepare_revision(
+        self,
+        managed: ManagedDataSource,
+        data: ChromaCollectionData,
+        cached: IncrementalProjectionCache | None,
+    ) -> CollectionRevision:
+        config = QuestionClusteringConfig.from_env()
+        incremental_cache = None
+        if self.enable_incremental:
+            managed.report(LoadingStatus.COMPUTING_PROJECTION, 30, "正在计算 UMAP 投影...")
+            content_ids = await asyncio.to_thread(_embedding_content_ids, data.ids, data.embeddings)
+            processor = IncrementalUMAPProcessor(self.incremental_config)
+            result = await asyncio.to_thread(
+                processor.update, data.embeddings, content_ids, cached, self.umap_args
             )
-
-            # Step 4: Build DataFrame
-            df = chroma_data_to_dataframe(data)
-            add_question_cluster_column(df, clusters.labels)
-
-            # Add projection columns
-            x_column = find_column_name(df.columns, "projection_x")
-            y_column = find_column_name(df.columns, "projection_y")
-            neighbors_column = find_column_name(df.columns, "__neighbors")
-
-            df[x_column] = proj.projection[:, 0]
-            df[y_column] = proj.projection[:, 1]
-            df[neighbors_column] = [
-                {"distances": d.tolist(), "ids": i.tolist()}
-                for i, d in zip(proj.knn_indices, proj.knn_distances)
-            ]
-
-            # Add row index
-            id_column = find_column_name(df.columns, "__row_index__")
-            df[id_column] = range(df.shape[0])
-
-            # Build ChromaDB ID to row index mapping
-            chroma_id_to_row_index = {
-                chroma_id: idx for idx, chroma_id in enumerate(data.ids)
-            }
-
-            # Build props
-            props = make_embedding_atlas_props(
-                row_id=id_column,
-                x=x_column,
-                y=y_column,
-                neighbors=neighbors_column,
-                text="document",
+            previous_clusters = cached.clusters if cached is not None and cached.fit_id == result.fit_id else None
+            managed.report(LoadingStatus.COMPUTING_PROJECTION, 60, "正在计算代表项...")
+            clusters = await asyncio.to_thread(
+                update_collection_clusters, content_ids, data.documents, data.embeddings, previous_clusters, config
             )
+            incremental_cache = result if clusters is result.clusters else replace(result, clusters=clusters)
+            labels = [clusters.rows[row_id][1] for row_id in content_ids]
+            representative_count = len(clusters.representative_ids)
+            projection, fit_id = result.to_projection(), result.fit_id
+        else:
+            managed.report(LoadingStatus.COMPUTING_PROJECTION, 25, "正在计算代表项...")
+            result = await asyncio.to_thread(cached_cluster_questions, data.documents, data.embeddings, config)
+            labels = result.labels
+            representative_count = len(result.representatives)
+            managed.report(LoadingStatus.COMPUTING_PROJECTION, 60, "正在计算 UMAP 投影...")
+            projection, fit_id = await asyncio.to_thread(self._full_projection, managed.collection_name, data)
 
-            metadata = {"props": props}
+        distinct_labels = {text: label for text, label in zip(data.documents, labels) if isinstance(text, str)}
+        unique_coverage = sum(label is not None for label in distinct_labels.values()) / max(1, len(distinct_labels))
+        row_coverage = sum(label is not None for label in labels) / len(labels)
+        managed.add_log(
+            f"已计算 {representative_count} 个代表项，不同文本覆盖率 {unique_coverage:.2%}，"
+            f"条目覆盖率 {row_coverage:.2%}",
+            progress=78,
+        )
 
-            # Build identifier
-            hasher = Hasher()
-            hasher.update(__version__)
-            hasher.update(collection_name)
-            hasher.update(metadata)
-            identifier = hasher.hexdigest()
+        managed.report(LoadingStatus.COMPUTING_PROJECTION, 80, "正在构建数据源...")
+        return await asyncio.to_thread(
+            self._build_revision, managed.collection_name, data, projection, labels, fit_id, incremental_cache
+        )
 
-            # Build chroma config
-            chroma_config = {
-                "host": self.chroma_host,
-                "port": self.chroma_port,
-                "collection": collection_name,
-                "id_to_row_index": chroma_id_to_row_index,
-            }
+    def _full_projection(self, name: str, data: ChromaCollectionData) -> tuple[Projection, str]:
+        hasher = Hasher()
+        hasher.update({
+            "version": 2,
+            "source": "chromadb",
+            "collection": name,
+            "ids": data.ids,
+            "embeddings": data.embeddings,
+            "umap_args": self.umap_args,
+        })
+        fit_id = hasher.hexdigest()
+        path = cache_path("projections") / fit_id
+        if Projection.exists(path):
+            try:
+                return Projection.load(path), fit_id
+            except (OSError, ValueError) as error:
+                logger.warning("Could not load projection cache %s: %s", path, error)
+        projection = _run_umap(data.embeddings, self.umap_args)
+        Projection.save(path, projection)
+        return projection, fit_id
 
-            managed.add_log("正在初始化数据源...", progress=95)
-            managed.update_progress(
-                LoadingStatus.COMPUTING_PROJECTION,
-                progress=95,
-                message="正在初始化数据源...",
-            )
+    def _build_revision(
+        self,
+        name: str,
+        data: ChromaCollectionData,
+        projection: Projection,
+        labels: list[str | None],
+        fit_id: str,
+        incremental_cache: IncrementalProjectionCache | None,
+    ) -> CollectionRevision:
+        df = chroma_data_to_dataframe(data)
+        representative_column = add_question_cluster_column(df, labels)
+        x_column = find_column_name(df.columns, "projection_x")
+        y_column = find_column_name(df.columns, "projection_y")
+        neighbors_column = find_column_name(df.columns, "__neighbors")
+        df[x_column] = projection.projection[:, 0]
+        df[y_column] = projection.projection[:, 1]
+        df[neighbors_column] = [
+            {"distances": distances.tolist(), "ids": indices.tolist()}
+            for indices, distances in zip(projection.knn_indices, projection.knn_distances)
+        ]
+        id_column = find_column_name(df.columns, "__row_index__")
+        df[id_column] = range(len(df))
+        metadata = {
+            "props": make_embedding_atlas_props(
+                row_id=id_column, x=x_column, y=y_column, neighbors=neighbors_column, text="document"
+            ),
+            "representative_item_column": representative_column,
+        }
 
-            # Create DataSource
-            data_source = DataSource(
-                identifier, df, metadata, chroma_config=chroma_config
-            )
-            managed.data_source = data_source
+        # Reuse viewer caches for the exact same snapshot, and isolate each changed revision.
+        hasher = Hasher()
+        hasher.update([
+            __version__, self.chroma_host, self.chroma_port, name, fit_id,
+            data.ids, data.documents, data.metadatas, metadata, labels, projection.projection,
+        ])
+        revision = hasher.hexdigest()
+        source = DataSource(revision, df, metadata, chroma_config={
+            "host": self.chroma_host,
+            "port": self.chroma_port,
+            "collection": name,
+            "id_to_row_index": {row_id: i for i, row_id in enumerate(data.ids)},
+        })
 
-            managed.add_log("加载完成", progress=100)
-            managed.update_progress(
-                LoadingStatus.READY,
-                progress=100,
-                message="加载完成",
-            )
+        connection = None
+        if self.duckdb_uri == "server":
+            connection = duckdb.connect(":memory:")
+            try:
+                connection.sql("CREATE TABLE dataset AS (SELECT * FROM df)")
+            except Exception:
+                connection.close()
+                raise
+        return CollectionRevision(revision, len(df), fit_id, source, connection, incremental_cache)
 
-            # Evict old entries if needed
-            self._evict_if_needed()
 
-            logger.info(f"Successfully loaded collection: {collection_name}")
-
-        except Exception as e:
-            logger.error(f"Failed to load collection {collection_name}: {e}")
-            managed.add_log(f"加载失败: {str(e)}", progress=0, error=True)
-            managed.update_progress(
-                LoadingStatus.ERROR,
-                progress=0,
-                message="加载失败",
-                error=str(e),
-            )
+def _embedding_content_ids(ids: list[str], embeddings: np.ndarray) -> list[str]:
+    """An edit to an existing vector is a removal and addition for UMAP."""
+    content_ids = []
+    for row_id, vector in zip(ids, embeddings, strict=True):
+        hasher = Hasher()
+        hasher.update([row_id, vector])
+        content_ids.append(hasher.hexdigest())
+    return content_ids

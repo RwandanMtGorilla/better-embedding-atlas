@@ -3,12 +3,15 @@
   import Viewer from "./Viewer.svelte";
 
   import { BackendDataSource } from "./backend_data_source.js";
+  import type { CollectionViewOptions } from "./collection_view_state.js";
 
   interface Props {
     serverUrl?: string;
+    revision?: string;
+    collection?: CollectionViewOptions;
   }
 
-  let { serverUrl = getDefaultServerUrl() }: Props = $props();
+  let { serverUrl = getDefaultServerUrl(), revision, collection }: Props = $props();
 
   function getDefaultServerUrl(): string {
     if (import.meta.env.MODE == "development") {
@@ -17,7 +20,7 @@
     return "./data/";
   }
 
-  let dataSource = new BackendDataSource(serverUrl);
+  let dataSource = new BackendDataSource(serverUrl, revision);
 </script>
 
-<Viewer dataSource={dataSource} />
+<Viewer dataSource={dataSource} collection={collection} />

@@ -11,10 +11,11 @@ export async function initializeDatabase(
   type: "wasm" | "socket" | "rest",
   uri: string | null | undefined = undefined,
 ) {
-  const db = await createDuckDB();
   if (type == "wasm") {
+    const db = await createDuckDB();
     const conn = await wasmConnector({ duckdb: db.duckdb, connection: db.connection });
     coordinator.databaseConnector(conn);
+    return () => db.duckdb.terminate();
   } else if (type == "socket") {
     const conn = await socketConnector({ uri: uri ?? "" });
     coordinator.databaseConnector(conn);

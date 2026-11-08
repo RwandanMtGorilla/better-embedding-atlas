@@ -1,4 +1,4 @@
-"""Deterministic representative-question coverage in the original vector space."""
+"""Deterministic representative-item coverage in the original vector space."""
 
 import heapq
 import hashlib
@@ -50,6 +50,27 @@ class QuestionClusters:
     request_coverage: float
     merged_unique_coverage: float
     merged_request_coverage: float
+
+
+@dataclass
+class CollectionQuestionClusters:
+    version: int
+    config: QuestionClusteringConfig
+    rows: dict[str, tuple[str | None, str | None]]  # content ID -> (text, label)
+    representative_ids: list[str]  # selected order, using the first row for each text
+
+    def matches(self, ids: list[str]) -> bool:
+        if self.rows.keys() != set(ids):
+            return False
+        representatives = {self.rows[row_id][0] for row_id in self.representative_ids}
+        return (
+            None not in representatives
+            and len(representatives) == len(self.representative_ids)
+            and all(
+                (label is None or (text is not None and label in representatives))
+                for text, label in self.rows.values()
+            )
+        )
 
 
 CLUSTER_CACHE_VERSION = 1
@@ -131,6 +152,21 @@ def cached_cluster_questions(texts, embeddings, config=None) -> QuestionClusters
     return result
 
 
+def _normalized_embeddings(embeddings, count):
+    vectors = np.array(embeddings, dtype=np.float32, copy=True)
+    if vectors.ndim != 2 or vectors.shape[0] != count or vectors.shape[1] == 0:
+        raise ValueError("Expected one embedding per item, with shape (N, D)")
+    if not np.isfinite(vectors).all():
+        raise ValueError("Item embeddings contain nonfinite values")
+    # Scale first to prevent overflow for large, otherwise valid float32 vectors.
+    scale = np.max(np.abs(vectors), axis=1, keepdims=True)
+    if np.any(scale == 0):
+        raise ValueError("Item embeddings contain zero vectors")
+    vectors /= scale
+    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    return vectors
+
+
 def cluster_questions(texts, embeddings, config=None) -> QuestionClusters:
     """Preserve input order; ties use first occurrence, duplicates use first vector.
 
@@ -139,17 +175,7 @@ def cluster_questions(texts, embeddings, config=None) -> QuestionClusters:
     with lazy greedy updates instead of storing an N x N similarity matrix.
     """
     config = config or QuestionClusteringConfig.from_env()
-    vectors = np.array(embeddings, dtype=np.float32, copy=True)
-    if vectors.ndim != 2 or vectors.shape[0] != len(texts) or vectors.shape[1] == 0:
-        raise ValueError("Expected one embedding per question, with shape (N, D)")
-    if not np.isfinite(vectors).all():
-        raise ValueError("Question embeddings contain nonfinite values")
-    # Scale first to prevent overflow for large, otherwise valid float32 vectors.
-    scale = np.max(np.abs(vectors), axis=1, keepdims=True)
-    if np.any(scale == 0):
-        raise ValueError("Question embeddings contain zero vectors")
-    vectors /= scale
-    vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)
+    vectors = _normalized_embeddings(embeddings, len(texts))
 
     lookup, unique_texts, first, counts, inverse = {}, [], [], [], []
     for row, text in enumerate(texts):
@@ -233,12 +259,72 @@ def cluster_questions(texts, embeddings, config=None) -> QuestionClusters:
                             request_coverage, merged_unique, merged_request)
 
 
+def update_collection_clusters(
+    ids: list[str],
+    documents: list[str | None],
+    embeddings: np.ndarray,
+    previous: CollectionQuestionClusters | None,
+    config: QuestionClusteringConfig,
+) -> CollectionQuestionClusters:
+    """Keep existing assignments and classify new texts against fixed representatives."""
+    texts = [text if isinstance(text, str) else None for text in documents]
+    rows_by_id = {row_id: i for i, row_id in enumerate(ids)}
+    if (
+        previous is None
+        or previous.version != CLUSTER_CACHE_VERSION
+        or previous.config != config
+        or any(row_id not in rows_by_id or texts[rows_by_id[row_id]] != text
+               for row_id, (text, _) in previous.rows.items())
+    ):
+        result = cached_cluster_questions(texts, embeddings, config)
+        first_ids = {}
+        for row_id, text in zip(ids, texts):
+            first_ids.setdefault(text, row_id)
+        return CollectionQuestionClusters(
+            CLUSTER_CACHE_VERSION,
+            config,
+            dict(zip(ids, zip(texts, result.labels))),
+            [first_ids[text] for text in result.representatives],
+        )
+
+    if len(ids) == len(previous.rows):
+        return previous
+
+    new_rows = [i for i, row_id in enumerate(ids) if row_id not in previous.rows]
+    new_vectors = _normalized_embeddings(embeddings[new_rows], len(new_rows))
+    labels = {text: label for text, label in previous.rows.values() if text is not None}
+    new_texts = {}
+    for offset, row in enumerate(new_rows):
+        text = texts[row]
+        if text is not None and text not in labels:
+            new_texts.setdefault(text, offset)
+
+    if new_texts and previous.representative_ids:
+        representative_rows = [rows_by_id[row_id] for row_id in previous.representative_ids]
+        representatives = _normalized_embeddings(embeddings[representative_rows], len(representative_rows))
+        candidates = new_vectors[list(new_texts.values())]
+        best = np.full(len(candidates), -np.inf, dtype=np.float32)
+        nearest = np.zeros(len(candidates), dtype=np.int64)
+        for index, representative in enumerate(representatives):
+            similarity = candidates @ representative
+            closer = similarity > best
+            nearest[closer] = index
+            best[closer] = similarity[closer]
+        for text, index, similarity in zip(new_texts, nearest, best):
+            if similarity >= config.similarity_threshold:
+                labels[text] = texts[representative_rows[index]]
+
+    rows = previous.rows.copy()
+    rows.update((ids[row], (texts[row], labels.get(texts[row]))) for row in new_rows)
+    return CollectionQuestionClusters(CLUSTER_CACHE_VERSION, config, rows, previous.representative_ids)
+
+
 def add_question_cluster_column(data_frame, labels):
     """Add a categorical coloring column without overwriting source metadata."""
-    name = "representative_question"
+    name = "representative_item"
     suffix = 1
     while name in data_frame.columns:
-        name = f"representative_question_{suffix}"
+        name = f"representative_item_{suffix}"
         suffix += 1
     data_frame[name] = labels
     return name

@@ -243,7 +243,7 @@ class ChromaDBClient:
 
         return np.array(all_embeddings)
 
-    def get_snapshot(self, collection_name: str) -> ChromaCollectionData:
+    def get_snapshot(self, collection_name: str, *, allow_empty: bool = False) -> ChromaCollectionData:
         """Read paired records in one response, then sort by stable Chroma ID.
 
         Avoid separate document/vector reads and offset pagination across writes.
@@ -253,6 +253,8 @@ class ChromaDBClient:
         result = collection.get(include=["documents", "metadatas", "embeddings"])
         ids = result["ids"]
         embeddings = result["embeddings"]
+        if allow_empty and not ids and (embeddings is None or len(embeddings) == 0):
+            return ChromaCollectionData([], [], [], np.empty((0, 0), dtype=np.float32))
         if not ids or embeddings is None or len(embeddings) != len(ids):
             raise ChromaDBError("Collection must contain one embedding per record")
         if len(set(ids)) != len(ids):

@@ -7,10 +7,10 @@ import os
 import re
 import uuid
 from functools import lru_cache
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Annotated, Callable
 
 import duckdb
-from fastapi import FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,7 +19,7 @@ from .data_source import DataSource
 from .utils import arrow_to_bytes, to_parquet_bytes
 
 if TYPE_CHECKING:
-    from .data_source_manager import DataSourceManager, LoadingStatus
+    from .data_source_manager import DataSourceManager
 
 
 def make_server(
@@ -329,7 +329,7 @@ def make_multi_server(
     """Creates a server for hosting Embedding Atlas with multiple collections."""
     from sse_starlette.sse import EventSourceResponse
 
-    from .data_source_manager import LoadingStatus
+    from .data_source_manager import REFRESH_INTERVAL, CollectionRevision, LoadingStatus
 
     app = FastAPI()
     app.add_middleware(
@@ -344,197 +344,121 @@ def make_multi_server(
 
     @app.get("/api/collections")
     async def list_collections():
-        """List all available ChromaDB collections."""
-        return {"collections": manager.list_collections()}
+        return {"collections": await asyncio.to_thread(manager.list_collections)}
 
     @app.get("/api/collection/{name}/status")
     async def get_collection_status(name: str):
-        """Get the loading status of a collection."""
-        managed = manager.get_managed(name)
-        return {
-            "name": name,
-            "status": managed.loading_progress.status.value,
-            "progress": managed.loading_progress.progress,
-            "message": managed.loading_progress.message,
-            "error": managed.loading_progress.error,
-        }
+        return {"name": name, **manager.get_managed(name).progress_event()}
 
     @app.get("/api/collection/{name}/progress")
-    async def collection_progress_stream(name: str):
-        """SSE endpoint for real-time loading progress updates."""
+    async def collection_progress_stream(name: str, watch: bool = False):
+        """Stream loading progress and, for open viewers, subsequent revisions."""
+        watch_changes = watch and duckdb_uri in (None, "wasm", "server")
 
         async def event_generator():
             queue = manager.subscribe_progress(name)
-
-            # Trigger loading (if not already started)
+            managed = manager.get_managed(name)
+            if watch_changes:
+                manager.check_for_refresh(managed)
             asyncio.create_task(manager.get_or_load(name))
 
             try:
                 while True:
-                    progress = await queue.get()
-                    managed = manager.get_managed(name)
+                    timeout = REFRESH_INTERVAL if watch_changes and managed.published is not None else None
+                    try:
+                        await asyncio.wait_for(queue.get(), timeout)
+                    except TimeoutError:
+                        manager.check_for_refresh(managed)
+                        continue
+
                     yield {
                         "event": "progress",
-                        "data": json.dumps({
-                            **progress.to_dict(),
-                            "logs": managed.logs,
-                        }),
+                        "data": json.dumps({**managed.progress_event(), "logs": managed.logs}),
                     }
-                    if progress.status in (LoadingStatus.READY, LoadingStatus.ERROR):
+                    if not watch and managed.loading_progress.status in (LoadingStatus.READY, LoadingStatus.ERROR):
                         break
             finally:
                 manager.unsubscribe_progress(name, queue)
 
         return EventSourceResponse(event_generator())
 
-    # === Collection Data Endpoints ===
+    async def get_collection_revision(name: str, revision: str | None = None) -> CollectionRevision:
+        managed = await manager.get_or_load(name)
+        published = managed.published
+        if published is None:
+            raise HTTPException(503, "Collection not loaded")
+        if revision is not None and revision != published.revision:
+            raise HTTPException(409, "Collection revision is no longer current")
+        if published.data_source is None:
+            raise HTTPException(404, "Collection is empty")
+        return published
 
-    # Per-collection DuckDB connections
-    _collection_connections: dict[str, duckdb.DuckDBPyConnection] = {}
-    _collection_executors: dict[str, concurrent.futures.ThreadPoolExecutor] = {}
+    Snapshot = Annotated[CollectionRevision, Depends(get_collection_revision)]
 
-    def get_duckdb_connection(name: str, data_source: DataSource):
-        if name not in _collection_connections:
-            con = duckdb.connect(":memory:")
-            df = data_source.dataset
-            con.sql("CREATE TABLE dataset AS (SELECT * FROM df)")
-            _collection_connections[name] = con
-        return _collection_connections[name]
-
-    def get_executor(name: str):
-        if name not in _collection_executors:
-            _collection_executors[name] = concurrent.futures.ThreadPoolExecutor()
-        return _collection_executors[name]
+    def query_connection(snapshot: CollectionRevision) -> duckdb.DuckDBPyConnection:
+        if duckdb_uri != "server" or snapshot.query_connection is None:
+            raise HTTPException(400, "Server-side queries not enabled")
+        return snapshot.query_connection
 
     @app.get("/collection/{name}/data/metadata.json")
-    async def get_collection_metadata(name: str):
-        """Get metadata for a collection."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse(
-                {"error": "Collection not loaded", "status": managed.loading_progress.status.value},
-                status_code=503,
-            )
-
-        if duckdb_uri is None or duckdb_uri == "wasm":
+    async def get_collection_metadata(snapshot: Snapshot):
+        if duckdb_uri in (None, "wasm"):
             db_meta = {"database": {"type": "wasm", "load": True}}
         elif duckdb_uri == "server":
             db_meta = {"database": {"type": "rest"}}
+        elif duckdb_uri.startswith("http"):
+            db_meta = {"database": {"type": "rest", "uri": duckdb_uri, "load": True}}
+        elif duckdb_uri.startswith("ws"):
+            db_meta = {"database": {"type": "socket", "uri": duckdb_uri, "load": True}}
         else:
-            if duckdb_uri.startswith("http"):
-                db_meta = {"database": {"type": "rest", "uri": duckdb_uri, "load": True}}
-            elif duckdb_uri.startswith("ws"):
-                db_meta = {"database": {"type": "socket", "uri": duckdb_uri, "load": True}}
-            else:
-                raise ValueError("invalid DuckDB uri")
+            raise ValueError("invalid DuckDB uri")
 
-        return managed.data_source.metadata | db_meta
+        return snapshot.data_source.metadata | db_meta
 
     @app.get("/collection/{name}/data/dataset.parquet")
-    async def get_collection_dataset(name: str):
-        """Get the dataset as a Parquet file."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-
-        content = to_parquet_bytes(managed.data_source.dataset)
+    async def get_collection_dataset(snapshot: Snapshot):
+        content = await asyncio.to_thread(to_parquet_bytes, snapshot.data_source.dataset)
         return Response(content=content, media_type="application/octet-stream")
 
     @app.post("/collection/{name}/data/cache/{cache_name}")
-    async def post_collection_cache(request: Request, name: str, cache_name: str):
-        """Set a cache value for a collection."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-        managed.data_source.cache_set(cache_name, await request.json())
+    async def post_collection_cache(request: Request, cache_name: str, snapshot: Snapshot):
+        snapshot.data_source.cache_set(cache_name, await request.json())
 
     @app.get("/collection/{name}/data/cache/{cache_name}")
-    async def get_collection_cache(name: str, cache_name: str):
-        """Get a cache value for a collection."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-        obj = managed.data_source.cache_get(cache_name)
+    async def get_collection_cache(cache_name: str, snapshot: Snapshot):
+        obj = snapshot.data_source.cache_get(cache_name)
         if obj is None:
             return Response(status_code=404)
         return obj
 
     @app.get("/collection/{name}/data/archive.zip")
-    async def get_collection_archive(name: str):
-        """Export collection as a static archive."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-        data = managed.data_source.make_archive(static_path)
-        return Response(content=data, media_type="application/zip")
+    async def get_collection_archive(snapshot: Snapshot):
+        content = await asyncio.to_thread(snapshot.data_source.make_archive, static_path)
+        return Response(content=content, media_type="application/zip")
 
     @app.get("/collection/{name}/data/query")
-    async def get_collection_query(name: str, req: Request):
-        """Execute a DuckDB query (GET)."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-
-        if duckdb_uri != "server":
-            return JSONResponse({"error": "Server-side queries not enabled"}, status_code=400)
-
+    async def get_collection_query(req: Request, snapshot: Snapshot):
+        connection = query_connection(snapshot)
         data = json.loads(req.query_params["query"])
-        executor = get_executor(name)
-        connection = get_duckdb_connection(name, managed.data_source)
-
-        def handle():
-            return _handle_query(connection, data)
-
-        return await asyncio.get_running_loop().run_in_executor(executor, handle)
+        return await asyncio.to_thread(_handle_query, connection, data)
 
     @app.post("/collection/{name}/data/query")
-    async def post_collection_query(name: str, req: Request):
-        """Execute a DuckDB query (POST)."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-
-        if duckdb_uri != "server":
-            return JSONResponse({"error": "Server-side queries not enabled"}, status_code=400)
-
-        body = await req.body()
-        data = json.loads(body)
-        executor = get_executor(name)
-        connection = get_duckdb_connection(name, managed.data_source)
-
-        def handle():
-            return _handle_query(connection, data)
-
-        return await asyncio.get_running_loop().run_in_executor(executor, handle)
+    async def post_collection_query(req: Request, snapshot: Snapshot):
+        connection = query_connection(snapshot)
+        data = await req.json()
+        return await asyncio.to_thread(_handle_query, connection, data)
 
     @app.post("/collection/{name}/data/selection")
-    async def post_collection_selection(name: str, req: Request):
-        """Export selection data."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-
-        if duckdb_uri != "server":
-            return JSONResponse({"error": "Server-side queries not enabled"}, status_code=400)
-
-        body = await req.body()
-        data = json.loads(body)
-        executor = get_executor(name)
-        connection = get_duckdb_connection(name, managed.data_source)
-
-        def handle():
-            return _handle_selection(connection, data)
-
-        return await asyncio.get_running_loop().run_in_executor(executor, handle)
+    async def post_collection_selection(req: Request, snapshot: Snapshot):
+        connection = query_connection(snapshot)
+        data = await req.json()
+        return await asyncio.to_thread(_handle_selection, connection, data)
 
     @app.post("/collection/{name}/data/vector-search")
-    async def post_collection_vector_search(name: str, req: Request):
+    async def post_collection_vector_search(req: Request, snapshot: Snapshot):
         """Perform vector search on a collection."""
-        managed = await manager.get_or_load(name)
-        if managed.data_source is None:
-            return JSONResponse({"error": "Collection not loaded"}, status_code=503)
-
-        if managed.data_source.chroma_config is None:
+        chroma_config = snapshot.data_source.chroma_config
+        if chroma_config is None:
             return JSONResponse({"error": "Vector search not available"}, status_code=400)
 
         from .chroma_client import ChromaDBClient, ChromaDBError
@@ -563,16 +487,15 @@ def make_multi_server(
             )
 
         try:
-            chroma_client = ChromaDBClient(
-                host=managed.data_source.chroma_config["host"],
-                port=managed.data_source.chroma_config["port"],
+            chroma_client = await asyncio.to_thread(
+                ChromaDBClient, host=chroma_config["host"], port=chroma_config["port"],
             )
-            collection_name = managed.data_source.chroma_config["collection"]
-            id_to_row_index = managed.data_source.chroma_config["id_to_row_index"]
+            id_to_row_index = chroma_config["id_to_row_index"]
 
-            query_embedding = embedding_service.embed_query(query)
-            search_result = chroma_client.vector_search(
-                collection_name=collection_name,
+            query_embedding = await asyncio.to_thread(embedding_service.embed_query, query)
+            search_result = await asyncio.to_thread(
+                chroma_client.vector_search,
+                collection_name=chroma_config["collection"],
                 query_embedding=query_embedding,
                 n_results=limit,
             )

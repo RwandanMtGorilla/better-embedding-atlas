@@ -77,31 +77,34 @@ class Projection:
         )
 
 
-def _run_umap(
-    hidden_vectors: np.ndarray,
-    umap_args: dict = {},
-) -> Projection:
-    logger.info("Running UMAP for input with shape %s...", str(hidden_vectors.shape))  # type: ignore
-
-    import umap
+def _umap_neighbors(hidden_vectors: np.ndarray, umap_args: dict):
     from umap.umap_ import nearest_neighbors
 
-    metric = umap_args.get("metric", "cosine")
-    n_neighbors = umap_args.get("n_neighbors", 15)
-
-    knn = nearest_neighbors(
+    return nearest_neighbors(
         hidden_vectors,
-        n_neighbors=n_neighbors,
-        metric=metric,
+        n_neighbors=umap_args.get("n_neighbors", 15),
+        metric=umap_args.get("metric", "cosine"),
         metric_kwds=None,
         angular=False,
         random_state=None,
     )
 
-    proj = umap.UMAP(**umap_args, precomputed_knn=knn)
-    result: np.ndarray = proj.fit_transform(hidden_vectors)  # type: ignore
 
-    return Projection(projection=result, knn_indices=knn[0], knn_distances=knn[1])
+def _fit_umap(hidden_vectors: np.ndarray, umap_args: dict) -> tuple[Projection, object]:
+    import umap
+
+    logger.info("Running UMAP for input with shape %s...", hidden_vectors.shape)
+    knn = _umap_neighbors(hidden_vectors, umap_args)
+    # A spectral initialization of a 2D projection needs at least four rows.
+    if 1 < len(hidden_vectors) <= 3 and umap_args.get("init", "spectral") == "spectral":
+        umap_args = {**umap_args, "init": "random"}
+    mapper = umap.UMAP(**umap_args, precomputed_knn=knn)
+    result = mapper.fit_transform(hidden_vectors)
+    return Projection(result, knn[0], knn[1]), mapper
+
+
+def _run_umap(hidden_vectors: np.ndarray, umap_args: dict | None = None) -> Projection:
+    return _fit_umap(hidden_vectors, umap_args or {})[0]
 
 
 # Signature of a function that takes a list of strings, batch size, model name, and optional args, and returns a numpy array of embeddings.
@@ -453,7 +456,7 @@ def compute_vector_projection(
 
     Args:
         data_frame: pandas DataFrame containing the vector data to process.
-        text: Optional question text column; enables representative-question clustering.
+        text: Optional text column used to calculate representative items.
         vector: str, column name containing the pre-computed vector embeddings.
                 Each entry should be a list or numpy array of numbers.
         x: str, column name where the UMAP X coordinates will be stored.
