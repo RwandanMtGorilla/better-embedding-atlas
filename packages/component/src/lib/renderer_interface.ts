@@ -1,6 +1,7 @@
 // Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
-import type { Point, ViewportState } from "./utils.js";
+import type { Matrix3 } from "./matrix.js";
+import type { Point } from "./utils.js";
 
 export type RenderMode = "points" | "density";
 
@@ -59,5 +60,5 @@ export interface EmbeddingRenderer {
   destroy(): void;
 
   /** Produce a density map */
-  densityMap(width: number, height: number, radius: number, viewportState: ViewportState): Promise<DensityMap>;
+  densityMap(width: number, height: number, radius: number, positionMatrix: Matrix3): Promise<DensityMap>;
 }

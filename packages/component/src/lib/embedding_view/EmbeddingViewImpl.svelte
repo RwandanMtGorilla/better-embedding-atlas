@@ -19,6 +19,8 @@
     queryClusterLabels:
       | ((clusters: Rectangle[][], context?: { levels: number[] }) => Promise<(string | null)[]>)
       | null;
+    // Undefined when local labels are unavailable, null while the Mosaic filter is settling.
+    queryLabelTile?: QueryLabelTile | null;
     tooltip: Selection | null;
     selection: Selection[] | null;
     querySelection: ((x: number, y: number, unitDistance: number) => Promise<Selection | null>) | null;
@@ -39,8 +41,15 @@
     y: number;
     sumDensity: number;
     rects: Rectangle[];
-    bandwidth: number;
-    label?: string | null;
+  }
+
+  const LABEL_MAP_SIZE = 1000;
+
+  function labelsForClusters(clusters: Cluster[], summaries: (string | null)[], levels?: number[]): Label[] {
+    return clusters.flatMap(({ x, y, sumDensity }, i) => {
+      let text = summaries[i];
+      return text ? [{ x, y, text, priority: sumDensity, level: levels?.[i] }] : [];
+    });
   }
 
   function viewingParameters(
@@ -101,7 +110,7 @@
   import TooltipContainer from "./TooltipContainer.svelte";
 
   import { defaultCategoryColors } from "../colors.js";
-  import type { EmbeddingRenderer } from "../renderer_interface.js";
+  import type { DensityMap, EmbeddingRenderer } from "../renderer_interface.js";
   import {
     cacheKeyForObject,
     deepEquals,
@@ -117,7 +126,15 @@
   import { isWebGPUAvailable } from "../webgpu_renderer/utils.js";
   import { customComponentAction, customComponentProps } from "./custom_component_helper.js";
   import type { EmbeddingViewConfig } from "./embedding_view_config.js";
-  import { layoutLabels, type LabelWithPlacement } from "./labels.js";
+  import { LabelTileRequests, type LabelTileSnapshot } from "./label_tile_requests.js";
+  import { layoutLabels, layoutTileLabels, type LabelWithPlacement } from "./labels.js";
+  import {
+    labelViewportBounds,
+    localLabelGrid,
+    localLabelLevel,
+    visibleLabelTiles,
+    type QueryLabelTile,
+  } from "./local_label_tiles.js";
   import { simplifyPolygon } from "./simplify_polygon.js";
   import { resolveTheme, type ThemeConfig } from "./theme.js";
   import type { Cache, CustomComponent, Label, OverlayProxy } from "./types.js";
@@ -145,6 +162,7 @@
     maxDensity = null,
     labels = null,
     queryClusterLabels = null,
+    queryLabelTile,
     tooltip = null,
     selection = null,
     querySelection = null,
@@ -211,7 +229,7 @@
     onRangeSelection?.(newValue);
   }
 
-  let clusterLabels: LabelWithPlacement[] = $state([]);
+  let baseLabels: LabelWithPlacement[] = $state.raw([]);
   let statusMessage: string | null = $state(null);
 
   let selectionMode = $state<"marquee" | "lasso" | "none">("none");
@@ -227,6 +245,10 @@
   let userPointSize = $derived(config?.pointSize ?? null);
   let mode = $derived(config?.mode ?? "points");
   let autoLabelEnabled = $derived(config?.autoLabelEnabled);
+  let autoLabelDensityThreshold = $derived(config?.autoLabelDensityThreshold);
+  let autoLabelStopWords = $derived(config?.autoLabelStopWords);
+  let labelFontFamily = $derived(resolvedTheme.fontFamily);
+  let hasData = $derived(data.x.length > 0);
   let downsampleMaxPoints = $derived(config?.downsampleMaxPoints ?? 4000000);
   let downsampleDensityWeight = $derived(config?.downsampleDensityWeight ?? 5);
 
@@ -243,8 +265,6 @@
   );
 
   let pointSize = $derived(viewingParams.pointSize);
-
-  let needsUpdateLabels = true;
 
   $effect.pre(() => {
     let needsRender = renderer?.setProps({
@@ -267,18 +287,90 @@
 
     if (needsRender) {
       setNeedsRender();
-      if (
-        (autoLabelEnabled !== false || labels != null) &&
-        needsUpdateLabels &&
-        renderer != null &&
-        data.x != null &&
-        data.x.length > 0 &&
-        defaultViewportState != null
-      ) {
-        needsUpdateLabels = false;
-        updateLabels(defaultViewportState);
-      }
     }
+  });
+
+  $effect(() => {
+    let target = renderer;
+    let viewport = defaultViewportState;
+    let custom = labels;
+    let fontFamily = labelFontFamily;
+    baseLabels = [];
+    statusMessage = null;
+    if (target == null || viewport == null) {
+      return;
+    }
+    if (custom == null && (autoLabelEnabled === false || queryClusterLabels == null || !hasData)) {
+      return;
+    }
+    let controller = new AbortController();
+    let signal = controller.signal;
+    let input = custom == null ? generateOverviewLabels(target, viewport, signal) : Promise.resolve(custom);
+    if (custom == null) {
+      statusMessage = "Generating labels...";
+    }
+    let normalScale = new Viewport(viewport, LABEL_MAP_SIZE, LABEL_MAP_SIZE).scale();
+    void input
+      .then((result) => {
+        signal.throwIfAborted();
+        return layoutLabels(normalScale, result, fontFamily);
+      })
+      .then((result) => {
+        if (!signal.aborted) {
+          baseLabels = result;
+        }
+      })
+      .catch((error) => {
+        if (!signal.aborted) {
+          console.warn("Could not generate map labels", error);
+        }
+      })
+      .finally(() => {
+        if (!signal.aborted) {
+          statusMessage = null;
+        }
+      });
+    return () => controller.abort();
+  });
+
+  let localEnabled = $derived(labels == null && autoLabelEnabled !== false && queryLabelTile !== undefined);
+  let localQuery = $derived(localEnabled ? (queryLabelTile ?? null) : null);
+  let initialScale = $derived(defaultViewportState?.scale);
+  let localLevel = $derived(localEnabled ? localLabelLevel(initialScale, resolvedViewportState.scale) : null);
+  let localGrid = $derived(
+    initialScale == null || localLevel == null ? null : localLabelGrid(initialScale, localLevel),
+  );
+  let localBounds = $derived(labelViewportBounds(resolvedViewportState, width, height));
+  let localSnapshot: LabelTileSnapshot | null = $state.raw(null);
+  let tileRequests = new LabelTileRequests((snapshot) => {
+    localSnapshot = snapshot;
+  });
+  $effect(() => {
+    let query = localQuery;
+    let grid = localGrid;
+    let tiles = query != null && grid != null && hasData ? visibleLabelTiles(grid, localBounds) : [];
+    tileRequests.setViewport(query, tiles);
+  });
+  let placedLocalLabels = $derived.by(() => {
+    let snapshot = localSnapshot;
+    let grid = localGrid;
+    if (
+      grid == null ||
+      snapshot == null ||
+      snapshot.query !== localQuery ||
+      snapshot.visible[0]?.level !== grid.level ||
+      snapshot.visible[0]?.size !== grid.size
+    ) {
+      return [];
+    }
+    return layoutTileLabels(snapshot, (grid.scale * Math.max(width, height)) / 2, labelFontFamily);
+  });
+  let clusterLabels = $derived.by(() => {
+    if (localGrid == null) {
+      return baseLabels;
+    }
+    let { xMin, xMax, yMin, yMax } = localBounds;
+    return placedLocalLabels.filter(({ coordinate: { x, y } }) => x >= xMin && x < xMax && y >= yMin && y < yMax);
   });
 
   function render() {
@@ -395,6 +487,7 @@
   });
 
   onDestroy(() => {
+    tileRequests.clear();
     renderer?.destroy();
     renderer = null;
   });
@@ -571,13 +664,7 @@
     return await querySelection(x, y, r);
   }
 
-  async function generateClusters(
-    renderer: EmbeddingRenderer,
-    bandwidth: number,
-    viewport: ViewportState,
-    densityThreshold: number = 0.005,
-  ): Promise<Cluster[]> {
-    let map = await renderer.densityMap(1000, 1000, bandwidth, viewport);
+  async function generateClusters(map: DensityMap, densityThreshold = 0.005): Promise<Cluster[]> {
     let cs = await findClusters(map.data, map.width, map.height);
     let collectedClusters: Cluster[] = [];
     for (let idx = 0; idx < cs.length; idx++) {
@@ -598,79 +685,62 @@
         y: coord.y,
         sumDensity: c.sumDensity,
         rects: rects,
-        bandwidth: bandwidth,
       });
     }
     let maxDensity = collectedClusters.reduce((a, b) => Math.max(a, b.sumDensity), 0);
     return collectedClusters.filter((x) => x.sumDensity / maxDensity > densityThreshold);
   }
 
-  async function generateLabels(viewport: ViewportState): Promise<Label[]> {
-    if (renderer == null || queryClusterLabels == null) {
+  async function generateOverviewLabels(
+    target: EmbeddingRenderer,
+    viewport: ViewportState,
+    signal: AbortSignal,
+  ): Promise<Label[]> {
+    let query = queryClusterLabels;
+    if (query == null) {
       return [];
     }
 
+    let labelCache = cache;
+    let stopWords = autoLabelStopWords;
+    let densityThreshold = autoLabelDensityThreshold;
     let cacheKey = await cacheKeyForObject({
       autoLabel: {
         version: 3,
         viewport,
-        stopWords: config?.autoLabelStopWords,
-        densityThreshold: config?.autoLabelDensityThreshold,
+        stopWords,
+        densityThreshold,
       },
     });
 
-    if (cache != null) {
-      let cached = await cache.get(cacheKey);
+    if (labelCache != null) {
+      let cached = await labelCache.get(cacheKey);
       if (cached != null) {
         return cached;
       }
     }
 
-    let newClusters = await generateClusters(renderer, 10, viewport, config?.autoLabelDensityThreshold ?? 0.005);
-    newClusters = newClusters.concat(await generateClusters(renderer, 5, viewport));
-
-    if (queryClusterLabels) {
-      let labels = await queryClusterLabels(
-        newClusters.map((x) => x.rects),
-        {
-          levels: newClusters.map((x) => (x.bandwidth == 10 ? 0 : 1)),
-        },
-      );
-      for (let i = 0; i < newClusters.length; i++) {
-        newClusters[i].label = labels[i];
-      }
+    signal.throwIfAborted();
+    let matrix = new Viewport(viewport, LABEL_MAP_SIZE, LABEL_MAP_SIZE).matrix();
+    let coarse = await generateClusters(
+      await target.densityMap(LABEL_MAP_SIZE, LABEL_MAP_SIZE, 10, matrix),
+      densityThreshold ?? undefined,
+    );
+    signal.throwIfAborted();
+    let fine = await generateClusters(await target.densityMap(LABEL_MAP_SIZE, LABEL_MAP_SIZE, 5, matrix));
+    signal.throwIfAborted();
+    let clusters = coarse.concat(fine);
+    let levels = coarse.map(() => 0).concat(fine.map(() => 1));
+    let summaries = await query(
+      clusters.map((cluster) => cluster.rects),
+      { levels },
+    );
+    signal.throwIfAborted();
+    let result = labelsForClusters(clusters, summaries, levels);
+    if (labelCache != null) {
+      await labelCache.set(cacheKey, result);
     }
-
-    let result: Label[] = newClusters
-      .filter((x) => x.label != null && x.label.length > 0)
-      .map((x) => ({
-        x: x.x,
-        y: x.y,
-        text: x.label!,
-        priority: x.sumDensity,
-        level: x.bandwidth == 10 ? 0 : 1,
-      }));
-
-    if (cache != null) {
-      await cache.set(cacheKey, result);
-    }
-
     return result;
-  }
-
-  async function updateLabels(viewport: ViewportState) {
-    let vp = new Viewport(viewport, 1000, 1000);
-    if (renderer == null) {
-      return;
-    }
-    if (labels != null) {
-      clusterLabels = await layoutLabels(vp.scale(), labels, resolvedTheme.fontFamily);
-    } else {
-      statusMessage = "Generating labels...";
-      let result = await generateLabels(viewport);
-      clusterLabels = await layoutLabels(vp.scale(), result, resolvedTheme.fontFamily);
-      statusMessage = null;
-    }
   }
 
   class DefaultTooltipRenderer {
@@ -764,13 +834,13 @@
     <!-- Cluster labels -->
     {#if showClusterLabels}
       <g>
-        {#each clusterLabels as label}
+        {#each clusterLabels as label (label.id ?? label)}
           {@const rows = label.text.split("\n")}
           {@const location = pointLocation(label.coordinate.x, label.coordinate.y)}
           {@const scale = resolvedViewport.scale()}
           {@const isVisible =
             label.placement != null && label.placement.minScale <= scale && scale <= label.placement.maxScale}
-          <g transform="translate({location.x},{location.y})">
+          <g data-label-id={label.id} transform="translate({location.x},{location.y})">
             {#if isVisible}
               <g>
                 {#each rows as row, index}

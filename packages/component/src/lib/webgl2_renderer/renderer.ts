@@ -10,7 +10,6 @@ import {
   type Matrix3,
 } from "../matrix.js";
 import type { DensityMap, EmbeddingRenderer, EmbeddingRendererProps, RenderMode } from "../renderer_interface.js";
-import type { ViewportState } from "../utils.js";
 import { Viewport } from "../viewport_utils.js";
 import { discBlurCommand } from "./disc_blur.js";
 import { fillCountBufferCommand } from "./fill_count_buffer.js";
@@ -134,14 +133,16 @@ export class EmbeddingRendererWebGL2 implements EmbeddingRenderer {
     this.df.destroy();
   }
 
-  async densityMap(width: number, height: number, radius: number, viewportState: ViewportState): Promise<DensityMap> {
+  async densityMap(width: number, height: number, radius: number, positionMatrix: Matrix3): Promise<DensityMap> {
     let df = this.df.subgraph();
     let cmd = densityMapCommand(df, this.gl, this.dataBuffers, df.value(width), df.value(height), df.value(radius));
-    let { x, y, scale: s } = viewportState;
-    let positionMatrix: Matrix3 = [s, 0, 0, 0, s, 0, -x * s, -y * s, 1];
-    let data = cmd.value(positionMatrix);
+    let data: Float32Array;
+    try {
+      data = cmd.value(positionMatrix);
+    } finally {
+      df.destroy();
+    }
     let inv_matrix = matrix3_inverse(positionMatrix);
-    df.destroy();
     return {
       data: data,
       width: width,

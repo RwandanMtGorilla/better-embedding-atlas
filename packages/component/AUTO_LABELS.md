@@ -6,10 +6,11 @@ Automatic labels rank words from each density region using a BM25-style score:
 
 Here `k1 = 1.2`, `b = 0.75`, and both IDFs use
 `log(1 + (N - df + 0.5) / (df + 0.5))`. Document IDF counts each normalized
-word stem once per valid document across the full input table, including documents
-outside the label regions. Region IDF and average length use nonempty regions at
-the same zoom level. `tf` counts regional documents containing the stem, and
-`coverage = tf / valid regional document count`. Region length is the sum of
+word stem once per valid document in the corpus, including documents outside the
+label regions. The corpus is the full table for overview labels and the filtered
+rows within a fixed analysis tile for local labels. Region IDF and average length
+use nonempty regions at the same zoom level. `tf` counts regional documents
+containing the stem, and `coverage = tf / valid regional document count`. Region length is the sum of
 per-document unique stem counts. Repeating a word within one document changes
 neither its score nor the length normalization. Squared coverage downweights
 isolated-document words, balancing their global rarity against regional support.
@@ -44,3 +45,15 @@ three topics with shared template words, the real clustering/keyword worker, and
 a seeded version-1 cache entry. Confirm distinct topic labels before and after
 zooming, both levels in the diagnostic output, and `oldCacheHits: 0` with
 `callbackCalls: 1`.
+
+The built-in Mosaic view uses fixed map tiles at four times the initial zoom
+and deeper. Each doubling of zoom halves the tile size. The density peak owns
+the label, and a fixed buffer around each tile supplies density and text context
+for clusters near its edges. Screen edges do not change the corpus. Density and
+text queries share the current filter. Collision decisions use a fixed ring of
+neighbors, so panning within a zoom band preserves the labels that stay in view.
+
+Missing tiles start loading after 300 ms without viewport changes. The view
+caches up to 64 tiles in memory, including empty tiles. The fixture at
+`/test/fixtures/viewport-labels.html` checks deeper zoom, cross-tile panning,
+reopening, fixed corpus bounds, filtering, and cache reuse.

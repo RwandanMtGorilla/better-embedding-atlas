@@ -5,6 +5,7 @@ import { dynamicLabelPlacement } from "../../dynamic_label_placement/dynamic_lab
 import { TextSummarizer, type TextSummarizerOptions } from "../../text_summarizer/text_summarizer.js";
 
 export { dynamicLabelPlacement, findClusters };
+export { findLabelTileClusters } from "./label_tile_clusters.js";
 
 let textSummarizers = new Map<string, TextSummarizer>();
 

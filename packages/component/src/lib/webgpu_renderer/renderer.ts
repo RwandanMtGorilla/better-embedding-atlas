@@ -11,7 +11,6 @@ import {
   type Vector4,
 } from "../matrix.js";
 import type { DensityMap, EmbeddingRenderer, EmbeddingRendererProps, RenderMode } from "../renderer_interface.js";
-import type { ViewportState } from "../utils.js";
 import { Viewport } from "../viewport_utils.js";
 import { makeModuleUniforms, type ModuleUniforms } from "./uniforms.js";
 import { gpuBuffer, gpuBufferData, gpuTexture } from "./utils.js";
@@ -154,10 +153,8 @@ export class EmbeddingRendererWebGPU implements EmbeddingRenderer {
     this.df.destroy();
   }
 
-  async densityMap(width: number, height: number, radius: number, viewportState: ViewportState): Promise<DensityMap> {
+  async densityMap(width: number, height: number, radius: number, positionMatrix: Matrix3): Promise<DensityMap> {
     let subgraph = this.df.subgraph();
-    let { x, y, scale: s } = viewportState;
-    let positionMatrix: Matrix3 = [s, 0, 0, 0, s, 0, -x * s, -y * s, 1];
     let inv_matrix = matrix3_inverse(positionMatrix);
     let cmd = makeDensityMapCommand(
       subgraph,
@@ -170,8 +167,12 @@ export class EmbeddingRendererWebGPU implements EmbeddingRenderer {
       subgraph.value(positionMatrix),
       this.dataBuffers,
     );
-    let data = await cmd.value();
-    subgraph.destroy();
+    let data: Float32Array;
+    try {
+      data = await cmd.value();
+    } finally {
+      subgraph.destroy();
+    }
     return {
       data: data,
       width: width,
@@ -545,9 +546,10 @@ function makeDensityMapCommand(
       });
       encoder.copyBufferToBuffer(countBuffer, 0, outputBuffer, 0, width * height * 2);
       device.queue.submit([encoder.finish()]);
-      return outputBuffer.mapAsync(GPUMapMode.READ, 0, width * height * 2).then(() => {
-        return convertFloat16ToFloat32Array(outputBuffer.getMappedRange());
-      });
+      return outputBuffer
+        .mapAsync(GPUMapMode.READ, 0, width * height * 2)
+        .then(() => convertFloat16ToFloat32Array(outputBuffer.getMappedRange()))
+        .finally(() => outputBuffer.destroy());
     },
   );
 }

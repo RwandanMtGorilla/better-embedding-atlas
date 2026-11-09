@@ -1,6 +1,12 @@
 <!-- Copyright (c) 2025 Apple Inc. Licensed under MIT License. -->
 <script lang="ts">
-  import { coordinator as defaultCoordinator, isSelection, makeClient, type MosaicClient } from "@uwdata/mosaic-core";
+  import {
+    coordinator as defaultCoordinator,
+    isSelection,
+    makeClient,
+    type Coordinator,
+    type MosaicClient,
+  } from "@uwdata/mosaic-core";
   import * as SQL from "@uwdata/mosaic-sql";
   import { untrack } from "svelte";
 
@@ -8,6 +14,7 @@
 
   import { deepEquals, type Point, type Rectangle, type ViewportState } from "../utils.js";
   import type { EmbeddingViewMosaicProps } from "./embedding_view_mosaic_api.js";
+  import { LABEL_TILE_MAP_SIZE, labelTileAnalysis, type LabelTile, type QueryLabelTile } from "./local_label_tiles.js";
   import {
     DataPointQuery,
     predicateForDataPoints,
@@ -16,6 +23,7 @@
   } from "./mosaic_client.js";
   import type { DataPoint, DataPointID } from "./types.js";
   import {
+    findLabelTileClusters,
     textSummarizerAdd,
     textSummarizerCreate,
     textSummarizerDestroy,
@@ -65,17 +73,24 @@
   let effectiveSelection: DataPoint[] | null = $state.raw(null);
   let effectiveRangeSelection: Rectangle | Point[] | null = $state.raw(null);
 
-  let clientId: any | null = $state.raw(null);
+  let clientId: MosaicClient | null = $state.raw(null);
+  // The predicate for the point data currently available for local labels.
+  let labelFilter: { predicate?: SQL.FilterExpr } | null = $state.raw(null);
 
   $effect(() => {
     // Let Svelte track the dependencies.
-    let deps = { coordinator: coordinator, source: { table, x, y, category } };
+    let deps = { coordinator, source: { table, x, y, category }, filter };
 
-    let client: { destroy: () => void } | null = null;
+    let client: MosaicClient | null = null;
     let didDestroy = false;
+    let pendingQueries = 0;
+    let requestedFilter: typeof labelFilter = null;
 
     async function initClient() {
       let source = deps.source;
+      xData = new Float32Array();
+      yData = new Float32Array();
+      categoryData = null;
       let approxDensity = await queryApproximateDensity(deps.coordinator, source);
       if (didDestroy) {
         return;
@@ -89,8 +104,10 @@
       // A client is a thing that queries data from a selection with user-defined query
       client = makeClient({
         coordinator: deps.coordinator,
-        selection: filter ?? undefined,
+        selection: deps.filter ?? undefined,
+        filterStable: false,
         query: (predicate) => {
+          requestedFilter = { predicate };
           return SQL.Query.from(source.table)
             .select({
               x: SQL.sql`${SQL.column(source.x)}::FLOAT`,
@@ -99,7 +116,21 @@
             })
             .where(predicate);
         },
+        queryPending: () => {
+          pendingQueries++;
+          if (!didDestroy) {
+            labelFilter = null;
+          }
+        },
+        queryError: () => {
+          pendingQueries--;
+          requestedFilter = null;
+        },
         queryResult: (data: any) => {
+          if (didDestroy) {
+            return;
+          }
+          pendingQueries--;
           let xArray = data.getChild("x").toArray();
           let yArray = data.getChild("y").toArray();
           let categoryArray = data.getChild("c")?.toArray() ?? null;
@@ -116,6 +147,9 @@
           xData = xArray;
           yData = yArray;
           categoryData = categoryArray;
+          if (pendingQueries === 0) {
+            labelFilter = requestedFilter;
+          }
           updateTooltip(null);
           updateSelection(null);
         },
@@ -129,8 +163,9 @@
     initClient();
 
     return () => {
-      clientId = null;
       didDestroy = true;
+      labelFilter = null;
+      clientId = null;
       client?.destroy();
     };
   });
@@ -331,59 +366,148 @@
   }
 
   // Cluster Labels
-  async function queryClusterLabels(
-    clusters: Rectangle[][],
-    context?: { levels: number[] },
-  ): Promise<(string | null)[]> {
-    if (text == null) {
-      return clusters.map(() => null);
+  interface LabelSource {
+    coordinator: Coordinator;
+    table: string;
+    x: string;
+    y: string;
+    text: string;
+    stopWords: string[] | null;
+  }
+
+  let configuredStopWords = $derived(config?.autoLabelStopWords ?? null);
+  let stopWords = $derived(configuredStopWords == null ? null : Array.from(configuredStopWords));
+  let labelDensityThreshold = $derived(config?.autoLabelDensityThreshold ?? undefined);
+  let labelSource = $derived(text == null ? null : { coordinator, table, x, y, text, stopWords });
+  let queryClusterLabels = $derived.by(() => {
+    let source = labelSource;
+    return source == null
+      ? null
+      : (clusters: Rectangle[][], context?: { levels: number[] }) =>
+          summarizeClusterLabels(source, clusters, context?.levels);
+  });
+  let queryLabelTile = $derived.by<QueryLabelTile | null | undefined>(() => {
+    let source = labelSource;
+    let filterSnapshot = labelFilter;
+    let densityThreshold = labelDensityThreshold;
+    if (source == null) {
+      return undefined;
     }
-    // Create text summarizer (in the worker)
+    if (filterSnapshot == null) {
+      return null;
+    }
+    return (tile, signal) => generateLabelTile(source, filterSnapshot.predicate, tile, densityThreshold, signal);
+  });
+
+  async function generateLabelTile(
+    source: LabelSource,
+    predicate: SQL.FilterExpr | undefined,
+    tile: LabelTile,
+    densityThreshold: number | undefined,
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    let { bounds, cellSize, firstColumn, firstRow } = labelTileAnalysis(tile);
+    let x = SQL.column(source.x);
+    let y = SQL.column(source.y);
+    let rowsInTile = SQL.Query.from(source.table).where(
+      SQL.gte(x, bounds.xMin),
+      SQL.lt(x, bounds.xMax),
+      SQL.gte(y, bounds.yMin),
+      SQL.lt(y, bounds.yMax),
+    );
+    if (predicate != null) {
+      rowsInTile.where(predicate);
+    }
+    // Both neighboring tiles use the same world bins throughout their shared buffer.
+    let binX = SQL.sql`(FLOOR(${x}::DOUBLE / ${cellSize}) - ${firstColumn})::INTEGER`;
+    let binY = SQL.sql`(FLOOR(${y}::DOUBLE / ${cellSize}) - ${firstRow})::INTEGER`;
+    let histogram = rowsInTile
+      .clone()
+      .select({ bin_x: binX, bin_y: binY, bin_count: SQL.sql`COUNT(*)::DOUBLE` })
+      .groupby(binX, binY);
+    let bins = await source.coordinator.query(histogram, { cache: false });
+    signal.throwIfAborted();
+    if (bins.numRows === 0) {
+      return [];
+    }
+    let columns = bins.getChild("bin_x").toArray();
+    let rows = bins.getChild("bin_y").toArray();
+    let counts = bins.getChild("bin_count").toArray();
+    let grid = new Float64Array(LABEL_TILE_MAP_SIZE * LABEL_TILE_MAP_SIZE);
+    for (let i = 0; i < counts.length; i++) {
+      grid[rows[i] * LABEL_TILE_MAP_SIZE + columns[i]] = counts[i];
+    }
+    let clusters = await findLabelTileClusters(grid, tile, densityThreshold, signal);
+    signal.throwIfAborted();
+    if (!clusters.some((cluster) => cluster.id != null)) {
+      return [];
+    }
+    let summaries = await summarizeClusterLabels(
+      source,
+      clusters.map((cluster) => cluster.rects),
+      undefined,
+      {
+        query: rowsInTile,
+        signal,
+      },
+    );
+    signal.throwIfAborted();
+    return clusters.flatMap(({ id, x, y, sumDensity }, i) => {
+      let text = summaries[i];
+      return id != null && text != null ? [{ id, x, y, text, priority: sumDensity }] : [];
+    });
+  }
+
+  async function summarizeClusterLabels(
+    { coordinator, table, x, y, text, stopWords }: LabelSource,
+    clusters: Rectangle[][],
+    levels?: number[],
+    local?: { query: SQL.SelectQuery; signal: AbortSignal },
+  ): Promise<(string | null)[]> {
+    let signal = local?.signal;
+    signal?.throwIfAborted();
+    let query = (local?.query ?? SQL.Query.from(table)).select({
+      x: SQL.column(x),
+      y: SQL.column(y),
+      text: SQL.column(text),
+    });
+    if (local != null) {
+      // Sort by the three projected columns so pagination is stable, even if source names differ.
+      query.orderby(SQL.literal(1), SQL.literal(2), SQL.literal(3));
+    }
     let summarizer = await textSummarizerCreate({
       regions: clusters,
-      levels: context?.levels,
-      stopWords: config?.autoLabelStopWords ?? null,
+      levels,
+      stopWords,
     });
-    // Add text data to the summarizer
-    let start = 0;
-    let chunkSize = 10000;
-    let lastAdd: Promise<unknown> | null = null;
-    while (true) {
-      let r = await coordinator.query(
-        SQL.Query.from(table)
-          .select({ x: SQL.column(x), y: SQL.column(y), text: SQL.column(text) })
-          .offset(start)
-          .limit(chunkSize),
-      );
-      let data = {
-        x: r.getChild("x").toArray(),
-        y: r.getChild("y").toArray(),
-        text: r.getChild("text").toArray(),
-      };
-      if (lastAdd != null) {
-        await lastAdd;
+    try {
+      let chunkSize = 10000;
+      for (let start = 0; ; start += chunkSize) {
+        signal?.throwIfAborted();
+        let rows = await coordinator.query(query.offset(start).limit(chunkSize), { cache: local == null });
+        signal?.throwIfAborted();
+        let texts = rows.getChild("text");
+        await textSummarizerAdd(summarizer, {
+          x: rows.getChild("x").toArray(),
+          y: rows.getChild("y").toArray(),
+          text: texts.toArray(),
+        });
+        if (texts.length < chunkSize) {
+          break;
+        }
       }
-      lastAdd = textSummarizerAdd(summarizer, data);
-      if (r.getChild("text").length < chunkSize) {
-        break;
-      }
-      start += chunkSize;
+      signal?.throwIfAborted();
+      let result = await textSummarizerSummarize(summarizer);
+      return result.map((words) => {
+        if (words.length === 0) {
+          return null;
+        }
+        return words.length > 2 ? words.slice(0, 2).join("-") + "-\n" + words.slice(2).join("-") : words.join("-");
+      });
+    } finally {
+      await textSummarizerDestroy(summarizer);
     }
-    if (lastAdd != null) {
-      await lastAdd;
-    }
-    let summarizeResult = await textSummarizerSummarize(summarizer);
-    await textSummarizerDestroy(summarizer);
-
-    return summarizeResult.map((words) => {
-      if (words.length == 0) {
-        return null;
-      } else if (words.length > 2) {
-        return words.slice(0, 2).join("-") + "-\n" + words.slice(2).join("-");
-      } else {
-        return words.join("-");
-      }
-    });
   }
 </script>
 
@@ -401,6 +525,7 @@
   defaultViewportState={defaultViewportState}
   querySelection={querySelection}
   queryClusterLabels={queryClusterLabels}
+  queryLabelTile={queryLabelTile}
   labels={labels}
   customTooltip={customTooltip}
   customOverlay={customOverlay}

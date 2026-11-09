@@ -261,7 +261,7 @@ export class Dataflow {
   private _nodes: Set<BaseNode>;
 
   /** Creates a new dataflow context. */
-  constructor(parent: Dataflow | null = null) {
+  constructor(private parent: Dataflow | null = null) {
     this._children = new Set();
     this._nodes = new Set();
     parent?._children.add(this);
@@ -277,6 +277,7 @@ export class Dataflow {
     }
     this._children.clear();
     this._nodes.clear();
+    this.parent?._children.delete(this);
   }
 
   /** Creates a value node. */

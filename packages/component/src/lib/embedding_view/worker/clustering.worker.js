@@ -3,6 +3,7 @@
 import {
   dynamicLabelPlacement,
   findClusters,
+  findLabelTileClusters,
   textSummarizerAdd,
   textSummarizerCreate,
   textSummarizerDestroy,
@@ -13,6 +14,7 @@ import {
 let functions = {
   dynamicLabelPlacement,
   findClusters,
+  findLabelTileClusters,
   textSummarizerCreate,
   textSummarizerAdd,
   textSummarizerDestroy,
@@ -20,14 +22,12 @@ let functions = {
 };
 
 onmessage = async (msg) => {
-  if (functions[msg.data.name]) {
-    let func = functions[msg.data.name];
-    let args = msg.data.payload;
-    let result = func(...args);
-    if (result instanceof Promise) {
-      result = await result;
-    }
-    postMessage({ id: msg.data.id, payload: result });
+  let { id, name, payload } = msg.data;
+  try {
+    let result = await functions[name](...payload);
+    postMessage({ id, payload: result });
+  } catch (error) {
+    postMessage({ id, error: error instanceof Error ? error.message : String(error) });
   }
 };
 
