@@ -30,6 +30,10 @@ class ChromaDBCollectionNotFoundError(ChromaDBError):
     pass
 
 
+class ChromaDeltaError(ChromaDBError):
+    """The requested records no longer match an ID probe."""
+
+
 @dataclass
 class ChromaCollectionData:
     """Container for ChromaDB collection data."""
@@ -38,6 +42,89 @@ class ChromaCollectionData:
     documents: list[str | None]
     metadatas: list[dict[str, Any] | None]
     embeddings: np.ndarray | None = None
+
+
+class ChromaCollectionReader:
+    """Read one collection by UUID, even if its name is later reused."""
+
+    DELTA_BATCH_SIZE = 1000
+
+    def __init__(self, collection):
+        self._collection = collection
+
+    @property
+    def uuid(self) -> str:
+        return str(self._collection.id)
+
+    def count(self) -> int:
+        return self._collection.count()
+
+    def get_ids(self) -> list[str]:
+        ids = self._collection.get(include=[])["ids"]
+        if any(not isinstance(row_id, str) for row_id in ids) or len(set(ids)) != len(ids):
+            raise ChromaDBError("Invalid collection ID list")
+        return sorted(ids)
+
+    def get_snapshot(self, *, allow_empty: bool = False) -> ChromaCollectionData:
+        """Read paired records in one response to avoid pagination across writes."""
+        return self._parse_records(self._get_records(), allow_empty=allow_empty)
+
+    def get_rows(self, ids: list[str]) -> ChromaCollectionData:
+        """Read explicit IDs in bounded batches; never align by response order."""
+        ids = sorted(ids)
+        batches = []
+        for offset in range(0, len(ids), self.DELTA_BATCH_SIZE):
+            requested = ids[offset : offset + self.DELTA_BATCH_SIZE]
+            result = self._get_records(ids=requested)
+            try:
+                batch = self._parse_records(result, allow_empty=True)
+            except (ChromaDBError, KeyError, TypeError, ValueError) as error:
+                raise ChromaDeltaError("Invalid Chroma response for new IDs") from error
+            if batch.ids != requested or (batches and batch.embeddings.shape[1] != batches[0].embeddings.shape[1]):
+                raise ChromaDeltaError("New Chroma records changed during the read")
+            batches.append(batch)
+
+        if not batches:
+            return ChromaCollectionData([], [], [], np.empty((0, 0), dtype=np.float32))
+        if len(batches) == 1:
+            return batches[0]
+        return ChromaCollectionData(
+            ids,
+            [document for batch in batches for document in batch.documents],
+            [metadata for batch in batches for metadata in batch.metadatas],
+            np.concatenate([batch.embeddings for batch in batches]),
+        )
+
+    def _get_records(self, **kwargs):
+        return self._collection.get(include=["documents", "metadatas", "embeddings"], **kwargs)
+
+    @staticmethod
+    def _parse_records(result, *, allow_empty: bool) -> ChromaCollectionData:
+        ids = result["ids"]
+        embeddings = result["embeddings"]
+        if allow_empty and not ids and (embeddings is None or len(embeddings) == 0):
+            return ChromaCollectionData([], [], [], np.empty((0, 0), dtype=np.float32))
+        if not ids or embeddings is None or len(embeddings) != len(ids):
+            raise ChromaDBError("Collection must contain one embedding per record")
+        if any(not isinstance(row_id, str) for row_id in ids) or len(set(ids)) != len(ids):
+            raise ChromaDBError("Snapshot contains invalid or duplicate record IDs")
+        documents = result["documents"]
+        metadatas = result["metadatas"]
+        if documents is None:
+            documents = [None] * len(ids)
+        if metadatas is None:
+            metadatas = [None] * len(ids)
+        if len(documents) != len(ids) or len(metadatas) != len(ids):
+            raise ChromaDBError("Snapshot records are not aligned")
+        vectors = np.asarray(embeddings, dtype=np.float32, order="C")
+        if vectors.ndim != 2 or not vectors.shape[1]:
+            raise ChromaDBError("Snapshot contains invalid embedding dimensions")
+        if all(a < b for a, b in zip(ids, ids[1:])):
+            return ChromaCollectionData(list(ids), list(documents), list(metadatas), vectors)
+        order = sorted(range(len(ids)), key=ids.__getitem__)
+        return ChromaCollectionData(
+            [ids[i] for i in order], [documents[i] for i in order], [metadatas[i] for i in order], vectors[order]
+        )
 
 
 @dataclass
@@ -94,8 +181,7 @@ class ChromaDBClient:
             Total row count
         """
         try:
-            collection = self._client.get_collection(collection_name)
-            return collection.count()
+            return self.open_collection(collection_name).count()
         except Exception as e:
             if "does not exist" in str(e).lower():
                 collections = [c.name for c in self._client.list_collections()]
@@ -104,6 +190,9 @@ class ChromaDBClient:
                     f"Available collections: {collections}"
                 )
             raise
+
+    def open_collection(self, collection_name: str) -> ChromaCollectionReader:
+        return ChromaCollectionReader(self._client.get_collection(collection_name))
 
     def get_documents_and_metadata(
         self,
@@ -244,36 +333,7 @@ class ChromaDBClient:
         return np.array(all_embeddings)
 
     def get_snapshot(self, collection_name: str, *, allow_empty: bool = False) -> ChromaCollectionData:
-        """Read paired records in one response, then sort by stable Chroma ID.
-
-        Avoid separate document/vector reads and offset pagination across writes.
-        A database-level transactional snapshot still depends on the server.
-        """
-        collection = self._client.get_collection(collection_name)
-        result = collection.get(include=["documents", "metadatas", "embeddings"])
-        ids = result["ids"]
-        embeddings = result["embeddings"]
-        if allow_empty and not ids and (embeddings is None or len(embeddings) == 0):
-            return ChromaCollectionData([], [], [], np.empty((0, 0), dtype=np.float32))
-        if not ids or embeddings is None or len(embeddings) != len(ids):
-            raise ChromaDBError("Collection must contain one embedding per record")
-        if len(set(ids)) != len(ids):
-            raise ChromaDBError("Snapshot contains duplicate record IDs")
-        documents = result["documents"]
-        metadatas = result["metadatas"]
-        if documents is None:
-            documents = [None] * len(ids)
-        if metadatas is None:
-            metadatas = [None] * len(ids)
-        if len(documents) != len(ids) or len(metadatas) != len(ids):
-            raise ChromaDBError("Snapshot records are not aligned")
-        order = sorted(range(len(ids)), key=lambda i: ids[i])
-        return ChromaCollectionData(
-            ids=[ids[i] for i in order],
-            documents=[documents[i] for i in order],
-            metadatas=[metadatas[i] for i in order],
-            embeddings=np.asarray(embeddings, dtype=np.float32)[order],
-        )
+        return self.open_collection(collection_name).get_snapshot(allow_empty=allow_empty)
 
     def get_all_data(
         self,

@@ -2,6 +2,7 @@
 
 """Reuse an existing UMAP fit when a collection grows."""
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from uuid import uuid4
@@ -14,6 +15,94 @@ from .question_clustering import CollectionQuestionClusters
 from .utils import logger
 
 _CACHE_VERSION = 1
+_MAX_NEIGHBOR_APPEND = 32
+_MAX_NEIGHBOR_WORK = 2_000_000_000
+_NEIGHBOR_BLOCK_SIZE = 4096
+
+
+def _closest(ids, distances, owners, k):
+    # Self comes first among equal distances, then the current row order. Missing
+    # neighbors from the previous fit go last, even when a distance is infinite.
+    distances = np.where(ids >= 0, distances, np.inf)
+    order = np.lexsort((ids, ids != owners[:, None], ids < 0, distances), axis=1)[:, :k]
+    return np.take_along_axis(ids, order, axis=1), np.take_along_axis(distances, order, axis=1)
+
+
+def _unit_vectors(vectors):
+    vectors = np.array(vectors, dtype=np.float32, copy=True)
+    scale = np.max(np.abs(vectors), axis=1, keepdims=True)
+    np.divide(vectors, scale, out=vectors, where=scale != 0)
+    norm = np.linalg.norm(vectors, axis=1, keepdims=True)
+    np.divide(vectors, norm, out=vectors, where=norm != 0)
+    return vectors, (norm[:, 0] == 0)
+
+
+def _append_neighbors(embeddings, previous_rows, new_rows, cached, umap_args):
+    """Keep the old graph and score only pairs with at least one new endpoint."""
+    n, dimension = embeddings.shape
+    metric = umap_args.get("metric", "cosine")
+    k = cached.knn_indices.shape[1]
+    if (
+        metric not in ("cosine", "euclidean")
+        or len(new_rows) > _MAX_NEIGHBOR_APPEND
+        or n * len(new_rows) * dimension > _MAX_NEIGHBOR_WORK
+        or not k
+        or np.any(cached.knn_indices >= len(cached.ids))
+    ):
+        indices, distances, _ = _umap_neighbors(embeddings, umap_args)
+        return indices, distances
+
+    indices = np.empty((n, k), dtype=cached.knn_indices.dtype)
+    distances = np.empty((n, k), dtype=cached.knn_distances.dtype)
+    new_indices = np.full((len(new_rows), k), -1, dtype=indices.dtype)
+    new_distances = np.full((len(new_rows), k), np.inf, dtype=distances.dtype)
+    old_rows = np.flatnonzero(previous_rows >= 0)
+    remap = np.empty(len(cached.ids), dtype=np.intp)
+    remap[previous_rows[old_rows]] = old_rows
+
+    if metric == "cosine":
+        new_vectors, new_zero = _unit_vectors(embeddings[new_rows])
+    else:
+        new_vectors = embeddings[new_rows].astype(np.float64)
+        new_norms = np.einsum("ij,ij->i", new_vectors, new_vectors)
+
+    for start in range(0, n, _NEIGHBOR_BLOCK_SIZE):
+        stop = min(start + _NEIGHBOR_BLOCK_SIZE, n)
+        block = embeddings[start:stop]
+        if metric == "cosine":
+            block, block_zero = _unit_vectors(block)
+            cross = np.clip(1.0 - block @ new_vectors.T, 0.0, 2.0)
+            cross[block_zero[:, None] & new_zero] = 0.0
+        else:
+            block = block.astype(np.float64)
+            block_norms = np.einsum("ij,ij->i", block, block)
+            cross = block_norms[:, None] + new_norms - 2.0 * (block @ new_vectors.T)
+            np.sqrt(np.maximum(cross, 0.0, out=cross), out=cross)
+        inside = (start <= new_rows) & (new_rows < stop)
+        cross[new_rows[inside] - start, np.flatnonzero(inside)] = 0.0
+
+        old_offsets = np.flatnonzero(previous_rows[start:stop] >= 0)
+        old = previous_rows[start + old_offsets]
+        old_neighbors = cached.knn_indices[old]
+        mapped = np.where(old_neighbors >= 0, remap[np.maximum(old_neighbors, 0)], -1)
+        candidate_ids = np.concatenate((mapped, np.broadcast_to(new_rows, (len(old), len(new_rows)))), axis=1)
+        candidate_distances = np.concatenate((cached.knn_distances[old], cross[old_offsets]), axis=1)
+        indices[start + old_offsets], distances[start + old_offsets] = _closest(
+            candidate_ids, candidate_distances, start + old_offsets, k
+        )
+
+        block_ids = np.broadcast_to(np.arange(start, stop), (len(new_rows), stop - start))
+        block_ids, block_distances = _closest(block_ids, cross.T, new_rows, k)
+        new_indices, new_distances = _closest(
+            np.concatenate((new_indices, block_ids), axis=1),
+            np.concatenate((new_distances, block_distances), axis=1),
+            new_rows,
+            k,
+        )
+
+    indices[new_rows] = new_indices
+    distances[new_rows] = new_distances
+    return indices, distances
 
 
 @dataclass
@@ -108,6 +197,8 @@ class IncrementalUMAPProcessor:
         ids: list[str],
         cached: IncrementalProjectionCache | None,
         umap_args: dict | None = None,
+        *,
+        load_model: Callable[[], object | None] | None = None,
     ) -> IncrementalProjectionCache:
         """Prepare an update without persisting anything."""
         if len(embeddings) != len(ids):
@@ -134,19 +225,23 @@ class IncrementalUMAPProcessor:
 
             ratio = (len(ids) - cached.fit_count) / cached.fit_count
             if (
-                cached.umap_model is not None
-                and len(ids) - len(new_rows) == len(cached.ids)
+                len(ids) - len(new_rows) == len(cached.ids)
                 and cached.fit_count >= self.config.min_samples_for_incremental
                 and ratio <= self.config.max_new_points_ratio
             ):
+                model = cached.umap_model
+                if model is None and load_model is not None:
+                    model = load_model()
+                if model is None:
+                    return self._full_compute(embeddings, ids, umap_args)
                 try:
-                    new_projection = np.asarray(cached.umap_model.transform(embeddings[new_rows]))
+                    new_projection = np.asarray(model.transform(embeddings[new_rows]))
                     if new_projection.shape != (len(new_rows), 2):
                         raise ValueError("Unexpected UMAP transform shape")
                 except Exception as error:
                     logger.warning("UMAP transform failed, rebuilding projection: %s", error)
                 else:
-                    knn_indices, knn_distances, _ = _umap_neighbors(embeddings, umap_args)
+                    knn_indices, knn_distances = _append_neighbors(embeddings, previous_rows, new_rows, cached, umap_args)
                     projection = np.empty((len(ids), 2), dtype=cached.projection.dtype)
                     old_rows = previous_rows >= 0
                     projection[old_rows] = cached.projection[previous_rows[old_rows]]
@@ -158,6 +253,7 @@ class IncrementalUMAPProcessor:
                         knn_indices=knn_indices,
                         knn_distances=knn_distances,
                         ids=ids,
+                        umap_model=model,
                         clusters=None,
                     )
 

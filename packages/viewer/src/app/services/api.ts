@@ -44,6 +44,14 @@ export async function fetchCollections(): Promise<CollectionInfo[]> {
   return data.collections;
 }
 
+export async function requestFullCollectionSync(name: string): Promise<void> {
+  const url = `${API_BASE}/api/collection/${encodeURIComponent(name)}/refresh`;
+  const resp = await fetch(url, { method: "POST" });
+  if (!resp.ok) {
+    throw new Error(`Failed to start collection sync: ${resp.status}`);
+  }
+}
+
 /**
  * Watch loading progress and published revisions for as long as the viewer is open.
  *

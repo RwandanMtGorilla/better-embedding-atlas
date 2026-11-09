@@ -15,7 +15,7 @@ from embedding_atlas.question_clustering import (
 from embedding_atlas.chroma_client import ChromaDBClient
 from embedding_atlas.projection import Projection, compute_vector_projection, _projection_for_texts
 from embedding_atlas.chroma_client import ChromaCollectionData
-from embedding_atlas.data_source_manager import DataSourceManager, ManagedDataSource, LoadingStatus
+from embedding_atlas.data_source_manager import DataSourceManager, LoadingStatus
 from embedding_atlas.incremental_umap import IncrementalProjectionCache
 
 
@@ -141,46 +141,53 @@ class DataSourceClusteringTests(unittest.IsolatedAsyncioTestCase):
         self.directory = self.enterContext(cache_directory())
         self.enterContext(patch("embedding_atlas.question_clustering.cache_path", return_value=self.directory))
         self.enterContext(patch("embedding_atlas.data_source_manager.cache_path", return_value=self.directory))
+        self.enterContext(patch("embedding_atlas.data_source.cache_path", return_value=self.directory))
 
     async def test_cached_projection_still_gets_current_labels(self):
-        manager = DataSourceManager("test", 1234, enable_incremental=False)
+        manager = DataSourceManager("test", 1234, enable_incremental=False, duckdb_uri="wasm")
         client = Mock()
-        client.get_snapshot.return_value = ChromaCollectionData(
+        reader = client.open_collection.return_value
+        reader.uuid = "test-v1"
+        data = ChromaCollectionData(
             ["a", "b"], ["A", "B"], [None, None], np.eye(2, dtype=np.float32)
         )
+        reader.get_snapshot.return_value = data
         manager._chroma_client = client
         projection = Projection(np.zeros((2, 2)), np.zeros((2, 1), dtype=int), np.zeros((2, 1)))
-        managed = ManagedDataSource("test")
         module = "embedding_atlas.data_source_manager."
-        with patch(module + "Projection.exists", return_value=True), patch(
-            module + "Projection.load", return_value=projection
-        ), patch(module + "DataSource") as source:
-            await manager._load_data_source(managed)
+        with patch(module + "_run_umap", return_value=projection) as umap:
+            managed = await manager.get_or_load("test")
             self.assertEqual(managed.loading_progress.status, LoadingStatus.READY)
-            frame = source.call_args.args[1]
-            self.assertEqual(frame.representative_item.tolist(), ["A", "B"])
+            data.documents[1] = "C"
+            manager.request_full_refresh("test")
+            await managed.loading_task
+            frame = managed.published.data_source.dataset
+            self.assertEqual(frame.representative_item.tolist(), ["A", "C"])
             self.assertEqual(frame.id.tolist(), ["a", "b"])
-            client.get_embeddings.assert_not_called()
+            umap.assert_called_once()
 
     async def test_incremental_vector_edit_changes_content_ids(self):
         manager = DataSourceManager("test", 1234, enable_incremental=True)
         client = Mock()
         data = ChromaCollectionData(["a", "b"], ["A", "B"], [None, None], np.eye(2, dtype=np.float32))
-        client.get_snapshot.return_value = data
+        reader = client.open_collection.return_value
+        reader.uuid = "test-v1"
+        reader.get_snapshot.return_value = data
         manager._chroma_client = client
         projection = Projection(np.zeros((2, 2)), np.zeros((2, 1), dtype=int), np.zeros((2, 1)))
         module = "embedding_atlas.data_source_manager."
         with patch(module + "IncrementalUMAPProcessor") as processor, patch(module + "DataSource") as source:
-            def rebuild(embeddings, ids, cached, args):
+            def rebuild(embeddings, ids, cached, args, *, load_model):
                 return IncrementalProjectionCache(
                     projection.projection, projection.knn_indices, projection.knn_distances,
                     ids, len(ids), uuid4().hex,
                 )
             processor.return_value.update.side_effect = rebuild
-            await manager._load_data_source(ManagedDataSource("test"))
+            managed = await manager.get_or_load("test")
             before = processor.return_value.update.call_args.args[1]
             data.embeddings[1] = [1, 0]
-            await manager._load_data_source(ManagedDataSource("test"))
+            manager.request_full_refresh("test")
+            await managed.loading_task
             after = processor.return_value.update.call_args.args[1]
             self.assertEqual(before[0], after[0])
             self.assertNotEqual(before[1], after[1])

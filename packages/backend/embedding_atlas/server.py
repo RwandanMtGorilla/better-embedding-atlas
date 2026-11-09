@@ -12,8 +12,9 @@ from typing import TYPE_CHECKING, Annotated, Callable
 import duckdb
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from .data_source import DataSource
 from .utils import arrow_to_bytes, to_parquet_bytes
@@ -350,6 +351,11 @@ def make_multi_server(
     async def get_collection_status(name: str):
         return {"name": name, **manager.get_managed(name).progress_event()}
 
+    @app.post("/api/collection/{name}/refresh", status_code=202)
+    async def request_collection_refresh(name: str):
+        manager.request_full_refresh(name)
+        return Response(status_code=202)
+
     @app.get("/api/collection/{name}/progress")
     async def collection_progress_stream(name: str, watch: bool = False):
         """Stream loading progress and, for open viewers, subsequent revisions."""
@@ -415,10 +421,17 @@ def make_multi_server(
 
         return snapshot.data_source.metadata | db_meta
 
+    @app.head("/collection/{name}/data/dataset.parquet", include_in_schema=False)
     @app.get("/collection/{name}/data/dataset.parquet")
     async def get_collection_dataset(snapshot: Snapshot):
-        content = await asyncio.to_thread(to_parquet_bytes, snapshot.data_source.dataset)
-        return Response(content=content, media_type="application/octet-stream")
+        source = snapshot.data_source
+        path = await asyncio.to_thread(source.parquet_file)
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            # Keep the revision's temporary file alive through the last byte.
+            background=BackgroundTask(lambda _source: None, source),
+        )
 
     @app.post("/collection/{name}/data/cache/{cache_name}")
     async def post_collection_cache(request: Request, cache_name: str, snapshot: Snapshot):
@@ -433,7 +446,7 @@ def make_multi_server(
 
     @app.get("/collection/{name}/data/archive.zip")
     async def get_collection_archive(snapshot: Snapshot):
-        content = await asyncio.to_thread(snapshot.data_source.make_archive, static_path)
+        content = await asyncio.to_thread(snapshot.data_source.make_archive, static_path, reuse_parquet=True)
         return Response(content=content, media_type="application/zip")
 
     @app.get("/collection/{name}/data/query")

@@ -1,13 +1,27 @@
 # Copyright (c) 2025 Apple Inc. Licensed under MIT License.
 
 import json
+import logging
 import os
 import zipfile
 from io import BytesIO
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+from threading import Lock
+from weakref import finalize
 
 import pandas as pd
 
 from .utils import cache_path, to_parquet_bytes
+
+logger = logging.getLogger(__name__)
+
+
+def _discard_parquet(path: Path):
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as error:
+        logger.warning("Could not remove temporary Parquet file %s: %s", path, error)
 
 
 class DataSource:
@@ -21,17 +35,27 @@ class DataSource:
         self.identifier = identifier
         self.dataset = dataset
         self.metadata = metadata
-        self.cache_path = cache_path("cache", self.identifier)
+        try:
+            self.cache_path = cache_path("cache", self.identifier)
+        except OSError as error:
+            logger.warning("Viewer cache unavailable: %s", error)
+            self.cache_path = None
+        self._parquet_lock = Lock()
+        self._parquet_path: Path | None = None
         # ChromaDB configuration for vector search
         # Structure: {"host": str, "port": int, "collection": str, "id_to_row_index": dict[str, int]}
         self.chroma_config = chroma_config
 
     def cache_set(self, name: str, data):
+        if self.cache_path is None:
+            return
         path = self.cache_path / name
         with open(path, "w") as f:
             json.dump(data, f)
 
     def cache_get(self, name: str):
+        if self.cache_path is None:
+            return None
         path = self.cache_path / name
         if path.exists():
             with open(path, "r") as f:
@@ -39,7 +63,24 @@ class DataSource:
         else:
             return None
 
-    def make_archive(self, static_path: str):
+    def parquet_file(self) -> Path:
+        """Create one immutable Parquet file for this revision on demand."""
+        with self._parquet_lock:
+            if self._parquet_path is None:
+                path = None
+                try:
+                    with NamedTemporaryFile(prefix="atlas-parquet-", suffix=".parquet", delete=False) as output:
+                        path = Path(output.name)
+                        self.dataset.to_parquet(output)
+                except BaseException:
+                    if path is not None:
+                        _discard_parquet(path)
+                    raise
+                self._parquet_path = path
+                finalize(self, _discard_parquet, path)
+            return self._parquet_path
+
+    def make_archive(self, static_path: str, *, reuse_parquet: bool = False):
         io = BytesIO()
         with zipfile.ZipFile(io, "w", zipfile.ZIP_DEFLATED) as zip:
             zip.writestr(
@@ -49,7 +90,10 @@ class DataSource:
                     | {"isStatic": True, "database": {"type": "wasm", "load": True}}
                 ),
             )
-            zip.writestr("data/dataset.parquet", to_parquet_bytes(self.dataset))
+            if reuse_parquet:
+                zip.write(self.parquet_file(), "data/dataset.parquet")
+            else:
+                zip.writestr("data/dataset.parquet", to_parquet_bytes(self.dataset))
             for root, _, files in os.walk(static_path):
                 for fn in files:
                     p = os.path.relpath(os.path.join(root, fn), static_path)
@@ -66,7 +110,7 @@ class DataSource:
                         zip.writestr(p, content)
                     else:
                         zip.write(full_path, p)
-            for root, _, files in os.walk(self.cache_path):
+            for root, _, files in (() if self.cache_path is None else os.walk(self.cache_path)):
                 for fn in files:
                     p = os.path.join(
                         "data/cache",
