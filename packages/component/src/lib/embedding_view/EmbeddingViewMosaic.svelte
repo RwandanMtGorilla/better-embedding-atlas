@@ -4,6 +4,7 @@
     coordinator as defaultCoordinator,
     isSelection,
     makeClient,
+    Priority,
     type Coordinator,
     type MosaicClient,
   } from "@uwdata/mosaic-core";
@@ -396,7 +397,8 @@
     if (filterSnapshot == null) {
       return null;
     }
-    return (tile, signal) => generateLabelTile(source, filterSnapshot.predicate, tile, densityThreshold, signal);
+    return (tile, signal, isPrefetch) =>
+      generateLabelTile(source, filterSnapshot.predicate, tile, densityThreshold, signal, isPrefetch);
   });
 
   async function generateLabelTile(
@@ -405,8 +407,10 @@
     tile: LabelTile,
     densityThreshold: number | undefined,
     signal: AbortSignal,
+    isPrefetch: () => boolean,
   ) {
     signal.throwIfAborted();
+    let priority = () => (isPrefetch() ? Priority.Low : Priority.Normal);
     let { bounds, cellSize, firstColumn, firstRow } = labelTileAnalysis(tile);
     let x = SQL.column(source.x);
     let y = SQL.column(source.y);
@@ -426,7 +430,7 @@
       .clone()
       .select({ bin_x: binX, bin_y: binY, bin_count: SQL.sql`COUNT(*)::DOUBLE` })
       .groupby(binX, binY);
-    let bins = await source.coordinator.query(histogram, { cache: false });
+    let bins = await source.coordinator.query(histogram, { cache: false, priority: priority() });
     signal.throwIfAborted();
     if (bins.numRows === 0) {
       return [];
@@ -450,6 +454,7 @@
       {
         query: rowsInTile,
         signal,
+        priority,
       },
     );
     signal.throwIfAborted();
@@ -463,7 +468,7 @@
     { coordinator, table, x, y, text, stopWords }: LabelSource,
     clusters: Rectangle[][],
     levels?: number[],
-    local?: { query: SQL.SelectQuery; signal: AbortSignal },
+    local?: { query: SQL.SelectQuery; signal: AbortSignal; priority: () => number },
   ): Promise<(string | null)[]> {
     let signal = local?.signal;
     signal?.throwIfAborted();
@@ -485,7 +490,10 @@
       let chunkSize = 10000;
       for (let start = 0; ; start += chunkSize) {
         signal?.throwIfAborted();
-        let rows = await coordinator.query(query.offset(start).limit(chunkSize), { cache: local == null });
+        let rows = await coordinator.query(query.offset(start).limit(chunkSize), {
+          cache: local == null,
+          priority: local?.priority() ?? Priority.Normal,
+        });
         signal?.throwIfAborted();
         let texts = rows.getChild("text");
         await textSummarizerAdd(summarizer, {

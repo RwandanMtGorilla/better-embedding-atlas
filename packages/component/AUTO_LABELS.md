@@ -53,7 +53,12 @@ for clusters near its edges. Screen edges do not change the corpus. Density and
 text queries share the current filter. Collision decisions use a fixed ring of
 neighbors, so panning within a zoom band preserves the labels that stay in view.
 
-Missing tiles start loading after 300 ms without viewport changes. The view
-caches up to 64 tiles in memory, including empty tiles. The fixture at
-`/test/fixtures/viewport-labels.html` checks deeper zoom, cross-tile panning,
-reopening, fixed corpus bounds, filtering, and cache reuse.
+Missing foreground tiles start loading after 300 ms without viewport changes.
+After 600 ms and once the overview and foreground are ready, the view prefetches
+the next ring for panning and the adjacent zoom bands at low query priority.
+Between two and four times the initial zoom, it prefetches the first local band
+while displaying overview labels. The view keeps separate in-memory caches for
+64 foreground and 72 prefetched tiles, including empty tiles.
+
+The fixture at `/test/fixtures/viewport-labels.html` checks first-frame label
+reuse on panning and zooming, fixed corpus bounds, filtering, and cache reuse.

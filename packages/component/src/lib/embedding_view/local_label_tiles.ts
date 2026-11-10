@@ -26,7 +26,7 @@ export interface LocalLabel extends Label {
   priority: number;
 }
 
-export type QueryLabelTile = (tile: LabelTile, signal: AbortSignal) => Promise<LocalLabel[]>;
+export type QueryLabelTile = (tile: LabelTile, signal: AbortSignal, isPrefetch: () => boolean) => Promise<LocalLabel[]>;
 
 export function localLabelLevel(initialScale: number | undefined, scale: number): number | null {
   if (initialScale == null || !(initialScale > 0) || !(scale >= 4 * initialScale)) {
@@ -68,7 +68,7 @@ export function visibleLabelTiles(grid: LabelGrid, bounds: Rectangle): LabelTile
   let maxColumn = Math.ceil(bounds.xMax / size) - 1;
   let minRow = Math.floor(bounds.yMin / size);
   let maxRow = Math.ceil(bounds.yMax / size) - 1;
-  // Leave space for the neighbor ring and retain exact integer bin coordinates.
+  // Leave space for both neighbor rings and retain exact integer bin coordinates.
   if (
     bounds.xMin >= bounds.xMax ||
     bounds.yMin >= bounds.yMax ||
@@ -78,6 +78,12 @@ export function visibleLabelTiles(grid: LabelGrid, bounds: Rectangle): LabelTile
   ) {
     return [];
   }
+  // A label's density peak is at a cell center. A sliver at the tile edge cannot contain one.
+  let halfCell = size / LABEL_TILE_CELLS / 2;
+  if ((minColumn + 1) * size - halfCell < bounds.xMin) minColumn++;
+  if (maxColumn * size + halfCell >= bounds.xMax) maxColumn--;
+  if ((minRow + 1) * size - halfCell < bounds.yMin) minRow++;
+  if (maxRow * size + halfCell >= bounds.yMax) maxRow--;
   let tiles: LabelTile[] = [];
   for (let row = minRow; row <= maxRow; row++) {
     for (let column = minColumn; column <= maxColumn; column++) {
@@ -95,6 +101,76 @@ export function labelTileNeighbors(tile: LabelTile): LabelTile[] {
     }
   }
   return tiles;
+}
+
+export function labelTilesWithNeighbors(tiles: LabelTile[]): Map<string, LabelTile> {
+  let result = new Map(tiles.map((tile) => [tile.key, tile]));
+  for (let tile of tiles) {
+    for (let neighbor of labelTileNeighbors(tile)) {
+      result.set(neighbor.key, neighbor);
+    }
+  }
+  return result;
+}
+
+function tilesNearBounds(grid: LabelGrid, bounds: Rectangle): Map<string, LabelTile> {
+  // Allow for rounding when applying a pan or an anchored zoom to world coordinates.
+  let margin = grid.size / LABEL_TILE_CELLS / 4;
+  let padded = {
+    xMin: bounds.xMin - margin,
+    xMax: bounds.xMax + margin,
+    yMin: bounds.yMin - margin,
+    yMax: bounds.yMax + margin,
+  };
+  return labelTilesWithNeighbors(visibleLabelTiles(grid, padded));
+}
+
+export function prefetchLabelTiles(
+  initialScale: number,
+  viewport: ViewportState,
+  width: number,
+  height: number,
+  maxScale: number,
+): LabelTile[] {
+  let { scale } = viewport;
+  if (
+    !(initialScale > 0 && scale >= 2 * initialScale && width > 0 && height > 0) ||
+    !Number.isFinite(scale / initialScale)
+  ) {
+    return [];
+  }
+  let level = localLabelLevel(initialScale, scale) ?? 1;
+  let bounds = labelViewportBounds(viewport, width, height);
+  let pan: LabelTile[] = [];
+  if (level >= 2) {
+    let grid = localLabelGrid(initialScale, level);
+    let required = labelTilesWithNeighbors(visibleLabelTiles(grid, bounds));
+    let nearby = tilesNearBounds(grid, bounds);
+    let surrounding = labelTilesWithNeighbors(Array.from(nearby.values()));
+    for (let key of required.keys()) {
+      surrounding.delete(key);
+    }
+    pan = Array.from(surrounding.values());
+  }
+
+  let finerGrid = localLabelGrid(initialScale, level + 1);
+  let finer: LabelTile[] = [];
+  if (finerGrid.scale <= maxScale) {
+    // Zooming in around any point on screen stays within the current bounds.
+    finer = Array.from(tilesNearBounds(finerGrid, bounds).values());
+  }
+  let coarser: LabelTile[] = [];
+  if (level > 2) {
+    let grid = localLabelGrid(initialScale, level - 1);
+    if (grid.scale <= maxScale) {
+      // At the lowest scale in that band, add the largest possible shift of the center.
+      let envelopeScale = grid.scale / (2 - grid.scale / scale);
+      let envelope = labelViewportBounds({ ...viewport, scale: envelopeScale }, width, height);
+      coarser = Array.from(tilesNearBounds(grid, envelope).values());
+    }
+  }
+  let finerFirst = scale / (finerGrid.scale / 2) >= Math.SQRT2;
+  return finerFirst ? [...pan, ...finer, ...coarser] : [...pan, ...coarser, ...finer];
 }
 
 export function labelTileAnalysis(tile: LabelTile) {

@@ -132,6 +132,7 @@
     labelViewportBounds,
     localLabelGrid,
     localLabelLevel,
+    prefetchLabelTiles,
     visibleLabelTiles,
     type QueryLabelTile,
   } from "./local_label_tiles.js";
@@ -336,6 +337,7 @@
   let localEnabled = $derived(labels == null && autoLabelEnabled !== false && queryLabelTile !== undefined);
   let localQuery = $derived(localEnabled ? (queryLabelTile ?? null) : null);
   let initialScale = $derived(defaultViewportState?.scale);
+  let maxZoomScale = $derived((initialScale ?? 1) * 1e2);
   let localLevel = $derived(localEnabled ? localLabelLevel(initialScale, resolvedViewportState.scale) : null);
   let localGrid = $derived(
     initialScale == null || localLevel == null ? null : localLabelGrid(initialScale, localLevel),
@@ -345,11 +347,25 @@
   let tileRequests = new LabelTileRequests((snapshot) => {
     localSnapshot = snapshot;
   });
-  $effect(() => {
-    let query = localQuery;
+  $effect.pre(() => {
+    let query = hasData ? localQuery : null;
+    let initial = initialScale;
+    if (query == null || initial == null || !(resolvedViewportState.scale >= 2 * initial)) {
+      tileRequests.setViewport(query, []);
+      return;
+    }
     let grid = localGrid;
-    let tiles = query != null && grid != null && hasData ? visibleLabelTiles(grid, localBounds) : [];
-    tileRequests.setViewport(query, tiles);
+    let tiles = grid == null ? [] : visibleLabelTiles(grid, localBounds);
+    let viewport = { ...resolvedViewportState };
+    let viewportWidth = width;
+    let viewportHeight = height;
+    let maxScale = maxZoomScale;
+    tileRequests.setViewport(query, tiles, () =>
+      prefetchLabelTiles(initial, viewport, viewportWidth, viewportHeight, maxScale),
+    );
+  });
+  $effect(() => {
+    tileRequests.setPrefetchAllowed(renderer != null && statusMessage == null);
   });
   let placedLocalLabels = $derived.by(() => {
     let snapshot = localSnapshot;
@@ -507,9 +523,8 @@
   function onZoom(scaler: number, position: Point) {
     let { x, y, scale } = resolvedViewportState;
     setTooltip(null);
-    let maxScale = (defaultViewportState?.scale ?? 1) * 1e2;
     let minScale = (defaultViewportState?.scale ?? 1) * 1e-2;
-    let newScale = Math.min(maxScale, Math.max(minScale, scale * scaler));
+    let newScale = Math.min(maxZoomScale, Math.max(minScale, scale * scaler));
     let rect = canvas!.getBoundingClientRect();
     let sz = Math.max(rect.width, rect.height);
     let px = ((position.x - rect.width / 2) / sz) * 2;
