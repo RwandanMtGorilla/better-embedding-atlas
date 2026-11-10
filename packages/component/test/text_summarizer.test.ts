@@ -28,6 +28,12 @@ describe("BM25 region labels", () => {
     expect(summarizer.summarize()).toEqual([["orchard", "outlier"]]);
   });
 
+  it("can require a stem to occur in two documents in the same region", () => {
+    const summarizer = new TextSummarizer({ regions, minRegionDocumentFrequency: 2 });
+    summarizer.add(rows(["orchards apple apple apple", "orchard harvest", "apple", "harvest"], [0.5, 0.5, 2.5, 2.5]));
+    expect(summarizer.summarize()).toEqual([["orchard"], []]);
+  });
+
   it("does not let within-document repetition alter regional ranking or normalization", () => {
     const baseline = new TextSummarizer({ regions });
     const repeated = new TextSummarizer({ regions });

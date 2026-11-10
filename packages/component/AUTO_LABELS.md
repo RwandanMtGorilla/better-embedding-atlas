@@ -15,8 +15,9 @@ per-document unique stem counts. Repeating a word within one document changes
 neither its score nor the length normalization. Squared coverage downweights
 isolated-document words, balancing their global rarity against regional support.
 For three documents, a word supported by only one gets a coverage weight of 1/9,
-versus 4/9 for two documents and 1 for all three. Rare words remain available as
-supplementary candidates; coverage is a soft weight, not a majority cutoff.
+versus 4/9 for two documents and 1 for all three. Overview labels can include
+words supported by one document. Local labels require at least two documents
+within the region to contain the same stem before it enters the ranking.
 This is an adaptation for navigation labels, not a search-query BM25 score.
 
 Words are segmented with `Intl.Segmenter`, filtered for stopwords, numbers, and
@@ -27,8 +28,8 @@ no statistics. Streaming chunks does not change the result.
 Each zoom level allocates up to four words per region in rounds. Candidates with
 higher scores win conflicts; ties use stem order followed by region index. A stem
 is used only once per level during this pass. Afterwards, regions with fewer than
-four words may reuse topic words from their own text. Thus completely identical
-documents may still have identical labels. Empty regions have no label.
+four words may reuse eligible words from their own text. Thus completely identical
+documents may still have identical labels. Regions without eligible words have no label.
 
 `queryClusterLabels(clusters, context?)` receives optional `{ levels: number[] }`
 in cluster order. Existing callbacks accepting only `clusters` remain compatible.

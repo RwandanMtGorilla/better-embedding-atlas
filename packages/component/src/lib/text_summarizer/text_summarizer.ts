@@ -9,6 +9,8 @@ export interface TextSummarizerOptions {
   regions: Rectangle[][];
   levels?: number[];
   stopWords?: string[] | null;
+  /** Minimum number of documents in a region that must contain a candidate stem. Defaults to 1. */
+  minRegionDocumentFrequency?: number;
 }
 
 interface Candidate {
@@ -31,6 +33,7 @@ export class TextSummarizer {
   private documentCount = 0;
   private levels: number[];
   private regions: Rectangle[][];
+  private minRegionDocumentFrequency: number;
 
   /** Create a new TextSummarizer */
   constructor(options: TextSummarizerOptions) {
@@ -43,6 +46,7 @@ export class TextSummarizer {
     this.documentCountPerClass = options.regions.map(() => 0);
     this.levels = options.regions.map((_, i) => options.levels?.[i] ?? 0);
     this.regions = options.regions;
+    this.minRegionDocumentFrequency = options.minRegionDocumentFrequency ?? 1;
 
     // Generate key2RegionIndices, a map from xy key to region index
     this.key2RegionIndices = new Map();
@@ -123,6 +127,7 @@ export class TextSummarizer {
       for (let region of active) {
         for (let [stem, [word]] of counts[region]) {
           let tf = this.documentFrequencyPerClass[region].get(stem)!;
+          if (tf < this.minRegionDocumentFrequency) continue;
           let coverage = tf / this.documentCountPerClass[region];
           let documentIDF = inverseDocumentFrequency(this.documentCount, this.documentFrequency.get(stem)!);
           let regionIDF = inverseDocumentFrequency(active.length, regionFrequency.get(stem)!);

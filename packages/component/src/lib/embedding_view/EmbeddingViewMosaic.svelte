@@ -485,6 +485,7 @@
       regions: clusters,
       levels,
       stopWords,
+      minRegionDocumentFrequency: local == null ? undefined : 2,
     });
     try {
       let chunkSize = 10000;
